@@ -23,7 +23,6 @@ from xingestion.collectors import (
     PlaywrightSearchAdapter,
     RateLimited,
     SourceAdapter,
-    TransientNetworkFailure,
     TwikitSearchAdapter,
 )
 from xingestion.config import Settings
@@ -120,9 +119,7 @@ class IngestionExecutor:
                     await self.token_repo.mark_cooldown(
                         lease,
                         cooldown_seconds=self.settings.token_cooldown_seconds,
-                        error_message=(
-                            f"{exc.failure_class}:{str(exc)}"
-                        ),
+                        error_message=f"{exc.failure_class}:{str(exc)}",
                     )
                 else:
                     await self.token_repo.release_lease(lease)
@@ -186,7 +183,7 @@ class IngestionExecutor:
             )
 
             try:
-                batch, lease = await self._collect_with_session(
+                batch, _lease = await self._collect_with_session(
                     adapter=self.primary_adapter,
                     request=request,
                     worker_id=worker_id,
@@ -203,7 +200,7 @@ class IngestionExecutor:
                     },
                 )
                 try:
-                    batch, lease = await self._collect_with_session(
+                    batch, _lease = await self._collect_with_session(
                         adapter=self.primary_adapter,
                         request=request,
                         worker_id=f"{worker_id}:failover",
@@ -211,7 +208,7 @@ class IngestionExecutor:
                 except CollectionError:
                     if self.recovery_adapter is None:
                         raise
-                    batch, lease = await self._collect_with_session(
+                    batch, _lease = await self._collect_with_session(
                         adapter=self.recovery_adapter,
                         request=request,
                         worker_id=f"{worker_id}:recovery",
@@ -219,12 +216,18 @@ class IngestionExecutor:
             except CollectionError:
                 if self.recovery_adapter is None:
                     raise
-                batch, lease = await self._collect_with_session(
+                batch, _lease = await self._collect_with_session(
                     adapter=self.recovery_adapter,
                     request=request,
                     worker_id=f"{worker_id}:recovery",
                 )
 
+            for item in batch.items:
+                item.setdefault("_collector_adapter", batch.adapter_name)
+                item.setdefault(
+                    "_collector_adapter_version",
+                    batch.adapter_version,
+                )
             all_items.extend(batch.items)
             adapters_used.append(
                 {
@@ -276,7 +279,22 @@ async def persist_documents(
         # Persistence failures are infrastructure failures, not malformed-record
         # failures. Propagate them so the durable task is retried rather than
         # acknowledging work whose data was never stored.
-        await upsert_insight_record(pool, document)
+        adapter_name = item.get("_collector_adapter")
+        adapter_version = item.get("_collector_adapter_version")
+        await upsert_insight_record(
+            pool,
+            document,
+            observation_key=(
+                f"task:{task.id}:generation:{task.delivery_generation}:"
+                f"{document.platform}:{document.original_tweet_id}"
+            ),
+            ingestion_task_id=task.id,
+            task_generation=task.delivery_generation,
+            adapter_name=str(adapter_name) if adapter_name else None,
+            adapter_version=(
+                str(adapter_version) if adapter_version else None
+            ),
+        )
         stored += 1
     return stored, rejected
 
