@@ -8,7 +8,8 @@ import asyncpg
 import redis.asyncio as aioredis
 
 from xingestion.config import Settings
-from xingestion.control_plane import OutboxDispatcher, RedisStreamQueue
+from xingestion.control_plane import RedisStreamQueue
+from xingestion.outbox import DurableOutboxDispatcher
 
 
 logging.basicConfig(
@@ -49,7 +50,7 @@ async def main() -> None:
         stream_name=settings.task_stream,
         group_name=settings.task_consumer_group,
     )
-    dispatcher = OutboxDispatcher(
+    dispatcher = DurableOutboxDispatcher(
         pool,
         redis,
         stream_name=settings.task_stream,
