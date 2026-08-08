@@ -131,3 +131,64 @@ An earlier CI run (`31241703189`) also established that the full dependency set 
 ### Next recommended segment
 
 Worker lease lifecycle and crash recovery: add task lease renewal/heartbeats, verify Redis `XAUTOCLAIM` + PostgreSQL lease-expiry interaction, inject worker termination between delivery and completion, and prove that work is reclaimed without simultaneous execution or acknowledged loss.
+
+---
+
+## 2026-08-08 — Segment 2: worker lease heartbeat and crash recovery
+
+**Branch:** `hardening/control-plane-v1`
+
+**Related plan items:** P0-01 task lease/crash recovery, the task-side portion of the reliability acceptance criteria, and P2-01 failure-injection/integration testing.
+
+### Files added or materially changed in this segment
+
+- `xingestion/lease_guard.py`
+- `xingestion/config.py`
+- `worker.py`
+- `tests/test_worker_recovery_integration.py`
+- `.github/workflows/control-plane-ci.yml`
+
+### Behavior changed
+
+- Added a renewable PostgreSQL task lease heartbeat. A worker processing a `RUNNING` task now periodically extends `lease_expires_at` only if the task generation, current lease owner, status, and still-unexpired lease all match. A worker cannot resurrect a lease after it has expired or after ownership has changed.
+- Added Redis pending-entry heartbeats using `XCLAIM` to the same consumer with zero idle time. This resets the PEL idle clock so healthy long-running work stays below the `XAUTOCLAIM` recovery threshold.
+- PostgreSQL remains the stronger execution-authority fence. Redis ownership transfer alone does not allow a second worker to execute while the DB lease is valid.
+- Added configurable `TASK_HEARTBEAT_SECONDS` with startup validation that it is shorter than `TASK_LEASE_SECONDS`. The default reclaim threshold is later than the durable lease horizon, giving an expired DB lease a deterministic opportunity to become reclaimable before another worker executes it.
+- Added `TaskLeaseGuard.run_guarded()`: collection and persistence run under a background heartbeat. If the durable DB fence is lost, the in-flight operation is cancelled rather than continuing without ownership.
+- Graceful cancellation releases the DB task back to `ENQUEUED` without manufacturing a failed attempt or incrementing retry counters. A hard crash remains recoverable through normal DB lease expiry plus Redis PEL reclaim.
+- Task final completion intentionally occurs after the heartbeat-protected collection/persistence section, preventing a completion/heartbeat race where a successful `DONE` transition could be misread as lease loss.
+
+### External behavior verified
+
+Redis's official `XAUTOCLAIM`/Streams documentation was checked before implementation. The design relies on documented behavior that:
+
+- `XAUTOCLAIM` transfers ownership only for pending entries older than the configured minimum idle time;
+- claiming resets the pending entry's idle time;
+- `XCLAIM` can refresh ownership/idle state for a known pending message;
+- Redis consumer-group recovery is therefore an at-least-once transport mechanism, not an exactly-once execution guarantee.
+
+### Verification actually performed
+
+GitHub Actions run `31243415471` completed successfully against real PostgreSQL 15 and Redis 7 service containers.
+
+The run passed dependency installation, Python compilation, correctness-oriented Ruff checks (including `worker.py` and the new lease guard), all database migrations, the previous outbox/control-plane tests, and the new worker recovery tests.
+
+The new integration tests verified:
+
+1. **Healthy heartbeat fencing:** a Redis pending message was deliberately aged to make it reclaimable, then a heartbeat renewed the PostgreSQL lease and reset Redis idle state. A second consumer could not reclaim the message and could not acquire the task lease.
+2. **Hard-crash state recovery:** a worker was simulated as dead by leaving its Redis message unacknowledged and expiring its PostgreSQL lease. The pending Redis entry was then reclaimed by another consumer, which successfully acquired the expired DB task lease. The stale original lease was unable to commit; the replacement lease completed successfully.
+3. **Lease-loss cancellation:** durable ownership was deliberately changed while a guarded long-running operation was active. The next heartbeat detected that the original worker no longer owned the DB fence, raised `TaskLeaseLost`, and cancelled the in-flight operation.
+
+These tests avoid long sleeps by deterministically aging Redis PEL entries and expiring PostgreSQL leases, so they test the same state transitions without timing-flaky CI delays.
+
+### What is *not* claimed complete
+
+- This segment does not claim literal process-level `SIGKILL` fault injection; the hard-crash condition is reproduced deterministically by the exact durable state left behind by a dead process: an unacknowledged PEL entry plus an expired PostgreSQL lease.
+- Exactly-once transport is not claimed. Correctness relies on at-least-once Redis delivery plus PostgreSQL lease fencing, generation checks, and idempotent persistence.
+- Session/token leases are not heartbeated in this segment. Collector calls currently hold those leases for a much shorter bounded request window, but session lifecycle hardening remains its own plan area.
+- Cross-region Redis/PostgreSQL latency, clock skew assumptions, worker pauses longer than the lease horizon, and large-scale reclaim storms have not yet been load/chaos tested.
+- Retry scheduling and reclaim racing under repeated collector failures still deserve one focused integration segment before P0-01 is considered fully closed.
+
+### Next recommended segment
+
+**Segment 3 — retry/dead-letter state-machine verification.** Exercise transient failure -> scheduled retry -> new delivery generation -> successful completion, retry exhaustion -> dead letter, stale old-generation messages after retry, and selective replay without duplicate logical execution. This closes the remaining high-risk task lifecycle before moving deeper into session/collector hardening.
