@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xingestionv2"
+version = "0.2.0"
+description = "Durable, horizontally scalable public social-data ingestion research subsystem"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "asyncpg==0.31.0",
+  "redis[hiredis]==8.0.1",
+  "pydantic==2.13.4",
+  "httpx==0.28.1",
+  "twikit==2.3.3",
+  "playwright==1.61.0",
+  "fastapi[standard]==0.141.1",
+  "pyotp==2.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
+  "ruff==0.16.2",
+]
+
+[tool.setuptools]
+packages = ["xingestion", "xingestion.collectors"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
