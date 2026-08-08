@@ -14,7 +14,7 @@ dependencies = [
   "httpx==0.28.1",
   "twikit==2.3.3",
   "playwright==1.61.0",
-  "fastapi[standard]==0.141.1",
+  "fastapi[standard]==0.139.2",
   "pyotp==2.9.0",
 ]
 
@@ -22,7 +22,7 @@ dependencies = [
 dev = [
   "pytest==9.1.1",
   "pytest-asyncio==1.4.0",
-  "ruff==0.16.2",
+  "ruff==0.15.22",
 ]
 
 [tool.setuptools]
