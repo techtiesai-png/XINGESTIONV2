@@ -93,7 +93,7 @@ async def test_transient_retry_rolls_generation_and_rejects_stale_delivery(resou
     assert await task_repo.schedule_retry(
         original_lease,
         error_message="transient_network_failure:test",
-        delay_seconds=0,
+        delay_seconds=60,
         failure_class="transient_network_failure",
     )
     await queue.ack(original_delivery.message_id)
@@ -101,7 +101,7 @@ async def test_transient_retry_rolls_generation_and_rejects_stale_delivery(resou
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT status, attempts, delivery_generation
+            SELECT status, attempts, delivery_generation, next_run_at
             FROM worker_tasks WHERE id = $1;
             """,
             task_id,
@@ -109,6 +109,10 @@ async def test_transient_retry_rolls_generation_and_rejects_stale_delivery(resou
     assert row["status"] == "RETRY_SCHEDULED"
     assert int(row["attempts"]) == 1
     assert int(row["delivery_generation"]) == 1
+
+    # The outbox must respect next_run_at rather than immediately publishing a
+    # retry. No sleep is necessary: the retry is deliberately scheduled ahead.
+    assert await dispatcher.dispatch_ready(batch_size=10) == 0
 
     stale_id = await redis.xadd(
         queue.stream_name,
@@ -133,6 +137,26 @@ async def test_transient_retry_rolls_generation_and_rejects_stale_delivery(resou
     )
     assert await task_repo.is_terminal_or_stale(task_id=task_id, generation=0)
     await queue.ack(stale.message_id)
+
+    # Advance only the durable scheduler timestamps so CI remains deterministic
+    # while exercising the same due-time transition as a real elapsed backoff.
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE worker_tasks
+            SET next_run_at = NOW()
+            WHERE id = $1 AND delivery_generation = 1;
+            """,
+            task_id,
+        )
+        await conn.execute(
+            """
+            UPDATE task_outbox
+            SET available_at = NOW()
+            WHERE task_id = $1 AND delivery_generation = 1;
+            """,
+            task_id,
+        )
 
     retry_delivery, retry_lease = await dispatch_and_lease(
         task_repo,
