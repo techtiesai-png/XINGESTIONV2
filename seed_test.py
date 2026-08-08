@@ -2,22 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import Any
 
 import asyncpg
 
-
-DATABASE_DSN = os.getenv("DATABASE_DSN", "postgresql://app_user:app_password@localhost:5432/appdb")
+from xingestion.config import Settings
+from xingestion.control_plane import TaskRepository
 
 
 TOKEN_ROWS = [
-    ("test_account_01", "mock_session_cookie_token_aaa"),
-    ("test_account_02", "mock_session_cookie_token_bbb"),
+    ("test_account_01", json.dumps({})),
+    ("test_account_02", json.dumps({})),
 ]
 
-
-# Aligned payloads with our new search_keyword requirements to prevent worker errors
 TASK_PAYLOADS: list[dict[str, Any]] = [
     {"search_keyword": "bitcoin"},
     {"search_keyword": "ai_agents"},
@@ -27,47 +24,57 @@ TASK_PAYLOADS: list[dict[str, Any]] = [
 ]
 
 
-async def seed_tokens(conn: Any) -> int:
-    seeded = 0
+async def seed_tokens(conn: asyncpg.Connection) -> int:
     for token_key, token_value in TOKEN_ROWS:
         await conn.execute(
             """
-            INSERT INTO service_tokens (token_key, token_value, status)
-            VALUES ($1, $2, 'ACTIVE')
+            INSERT INTO service_tokens (
+                token_key,
+                token_value,
+                status,
+                max_concurrency,
+                updated_at
+            )
+            VALUES ($1, $2, 'REVOKED', 1, NOW())
             ON CONFLICT (token_key) DO UPDATE SET
                 token_value = EXCLUDED.token_value,
-                status = 'ACTIVE'
+                status = 'REVOKED',
+                updated_at = NOW();
             """,
             token_key,
             token_value,
         )
-        seeded += 1
-    return seeded
-
-
-async def seed_tasks(conn: Any) -> int:
-    seeded = 0
-    for payload in TASK_PAYLOADS:
-        await conn.execute(
-            """
-            INSERT INTO worker_tasks (task_type, payload, status, attempts, max_attempts, next_run_at)
-            VALUES ($1, $2::jsonb, 'PENDING', 0, 5, NOW())
-            ON CONFLICT DO NOTHING
-            """,
-            "X_KEYWORD_SEARCH",
-            json.dumps(payload),
-        )
-        seeded += 1
-    return seeded
+    return len(TOKEN_ROWS)
 
 
 async def main() -> None:
-    pool = await asyncpg.create_pool(dsn=DATABASE_DSN, min_size=1, max_size=4)
+    settings = Settings.from_env()
+    pool = await asyncpg.create_pool(
+        dsn=settings.database_dsn,
+        min_size=1,
+        max_size=4,
+    )
+    task_repo = TaskRepository(pool)
     try:
         async with pool.acquire() as conn:
             token_count = await seed_tokens(conn)
-            task_count = await seed_tasks(conn)
-        print(f"Seeded {token_count} service token rows and {task_count} worker task rows successfully.")
+
+        task_ids = []
+        for payload in TASK_PAYLOADS:
+            keyword = str(payload["search_keyword"])
+            task_ids.append(
+                await task_repo.create_task(
+                    task_type="X_KEYWORD_SEARCH",
+                    payload=payload,
+                    idempotency_key=f"seed:X_KEYWORD_SEARCH:{keyword}",
+                    max_attempts=5,
+                )
+            )
+
+        print(
+            f"Seeded/updated {token_count} non-live test session rows and "
+            f"ensured {len(task_ids)} durable tasks: {task_ids}"
+        )
     finally:
         await pool.close()
 
