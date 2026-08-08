@@ -108,7 +108,7 @@ class DurableOutboxDispatcher:
                         """
                         UPDATE worker_tasks
                         SET status = 'ENQUEUED',
-                            enqueued_at = COALESCE(enqueued_at, NOW()),
+                            enqueued_at = NOW(),
                             updated_at = NOW()
                         WHERE id = $1
                           AND delivery_generation = $2
