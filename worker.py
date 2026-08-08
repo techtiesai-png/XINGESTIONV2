@@ -34,6 +34,7 @@ from xingestion.control_plane import (
     TokenLease,
     TokenRepository,
 )
+from xingestion.lease_guard import TaskLeaseGuard, TaskLeaseLost
 
 
 class JSONFormatter(logging.Formatter):
@@ -276,9 +277,6 @@ async def persist_documents(
             )
             continue
 
-        # Persistence failures are infrastructure failures, not malformed-record
-        # failures. Propagate them so the durable task is retried rather than
-        # acknowledging work whose data was never stored.
         adapter_name = item.get("_collector_adapter")
         adapter_version = item.get("_collector_adapter_version")
         await upsert_insight_record(
@@ -336,6 +334,26 @@ async def transition_failure(
     )
 
 
+async def _execute_leased_work(
+    *,
+    task: TaskLease,
+    worker_id: str,
+    executor: IngestionExecutor,
+    pool: asyncpg.Pool,
+) -> tuple[dict[str, Any], int, int]:
+    items, collection_metadata = await executor.collect(
+        task=task,
+        worker_id=worker_id,
+    )
+    stored, rejected = await persist_documents(
+        pool,
+        task=task,
+        items=items,
+        worker_id=worker_id,
+    )
+    return collection_metadata, stored, rejected
+
+
 async def handle_delivery(
     *,
     delivery: StreamDelivery,
@@ -360,17 +378,26 @@ async def handle_delivery(
             await queue.ack(delivery.message_id)
         return
 
+    lease_guard = TaskLeaseGuard(
+        pool,
+        queue,
+        lease_seconds=settings.task_lease_seconds,
+        heartbeat_seconds=settings.task_heartbeat_seconds,
+    )
+
     try:
-        items, collection_metadata = await executor.collect(
+        collection_metadata, stored, rejected = await lease_guard.run_guarded(
             task=task,
-            worker_id=worker_id,
+            delivery=delivery,
+            consumer_name=worker_id,
+            operation=_execute_leased_work(
+                task=task,
+                worker_id=worker_id,
+                executor=executor,
+                pool=pool,
+            ),
         )
-        stored, rejected = await persist_documents(
-            pool,
-            task=task,
-            items=items,
-            worker_id=worker_id,
-        )
+
         completed = await task_repo.complete_task(
             task,
             result_metadata={
@@ -389,7 +416,21 @@ async def handle_delivery(
                     "task_generation": task.delivery_generation,
                 },
             )
+    except TaskLeaseLost as exc:
+        # Another owner or terminal state has won the durable fence. Do not
+        # mutate task state or ACK a message this worker no longer owns.
+        logger.warning(
+            "task lease lost; abandoning local execution: %s",
+            exc,
+            extra={
+                "worker_id": worker_id,
+                "task_id": task.id,
+                "task_generation": task.delivery_generation,
+                "failure_class": "task_lease_lost",
+            },
+        )
     except asyncio.CancelledError:
+        await lease_guard.release_for_recovery(task)
         raise
     except Exception as exc:
         transitioned = await transition_failure(
