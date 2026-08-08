@@ -57,6 +57,7 @@ jobs:
             xingestion \
             worker.py \
             dispatcher.py \
+            task_replay.py \
             scripts \
             tests
 
@@ -66,6 +67,7 @@ jobs:
             xingestion \
             worker.py \
             dispatcher.py \
+            task_replay.py \
             scripts/apply_migrations.py \
             tests
 
@@ -78,3 +80,4 @@ jobs:
           tests/test_control_plane_smoke.py
           tests/test_outbox_integration.py
           tests/test_worker_recovery_integration.py
+          tests/test_retry_replay_integration.py
