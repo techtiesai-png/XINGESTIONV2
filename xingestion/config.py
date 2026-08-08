@@ -25,6 +25,7 @@ class Settings:
     task_stream: str
     task_consumer_group: str
     task_lease_seconds: int
+    task_heartbeat_seconds: float
     task_read_block_ms: int
     task_reclaim_idle_ms: int
     outbox_poll_seconds: float
@@ -50,10 +51,23 @@ class Settings:
             raise ValueError("DB_POOL_MIN_SIZE cannot exceed DB_POOL_MAX_SIZE")
 
         lease_seconds = _positive_int("TASK_LEASE_SECONDS", 120)
+        heartbeat_seconds = _positive_float(
+            "TASK_HEARTBEAT_SECONDS",
+            max(1.0, lease_seconds / 3),
+        )
+        if heartbeat_seconds >= lease_seconds:
+            raise ValueError(
+                "TASK_HEARTBEAT_SECONDS must be shorter than TASK_LEASE_SECONDS"
+            )
+
         reclaim_idle_ms = _positive_int(
             "TASK_RECLAIM_IDLE_MS",
-            max(lease_seconds * 1000, 120_000),
+            max((lease_seconds + 5) * 1000, 120_000),
         )
+        if reclaim_idle_ms <= heartbeat_seconds * 1000:
+            raise ValueError(
+                "TASK_RECLAIM_IDLE_MS must exceed the task heartbeat interval"
+            )
 
         return cls(
             database_dsn=os.getenv(
@@ -67,6 +81,7 @@ class Settings:
                 "xingestion-workers",
             ),
             task_lease_seconds=lease_seconds,
+            task_heartbeat_seconds=heartbeat_seconds,
             task_read_block_ms=_positive_int("TASK_READ_BLOCK_MS", 2_000),
             task_reclaim_idle_ms=reclaim_idle_ms,
             outbox_poll_seconds=_positive_float("OUTBOX_POLL_SECONDS", 0.25),
