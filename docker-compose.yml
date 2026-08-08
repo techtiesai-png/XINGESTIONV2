@@ -23,23 +23,40 @@ services:
     depends_on:
       postgres-db:
         condition: service_healthy
+    environment:
+      PGPASSWORD: app_password
     volumes:
-      - ./schema_analytics.sql:/migrations/schema_analytics.sql:ro
+      - ./schema_analytics.sql:/db/schema_analytics.sql:ro
+      - ./migrations:/db/migrations:ro
     entrypoint: ["/bin/sh", "-lc"]
     command: >
+      set -eu;
       until pg_isready -h postgres-db -U app_user -d appdb; do
         echo "Waiting for postgres-db...";
         sleep 2;
       done;
-      psql -h postgres-db -U app_user -d appdb -f /migrations/schema_analytics.sql
+      psql -v ON_ERROR_STOP=1 -h postgres-db -U app_user -d appdb -f /db/schema_analytics.sql;
+      for migration in /db/migrations/*.sql; do
+        echo "Applying $${migration}";
+        psql -v ON_ERROR_STOP=1 -h postgres-db -U app_user -d appdb -f "$${migration}";
+      done
     restart: "no"
 
   redis-queue:
     image: redis:7-alpine
     container_name: redis-queue
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     ports:
       - "6379:6379"
-    restart: always
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
 
 volumes:
   pgdata:
+  redisdata:
