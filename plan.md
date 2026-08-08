@@ -1,737 +1,817 @@
-# XINGESTIONV2 Production Hardening Plan
+# XINGESTIONV2 Implementation Plan
 
-> Read [`AGENTS.md`](./AGENTS.md) before implementing this plan. Record completed work in [`implemented.md`](./implemented.md).
+> Architecture was redesigned on 2026-08-08. Read [`architecture.md`](./architecture.md) and [`AGENTS.md`](./AGENTS.md) before implementation. Record only actually completed/verified work in [`implemented.md`](./implemented.md).
 
-## 0. Audit baseline
+---
 
-**Audit baseline:** runtime code originally present at commit `8e7771a483d5ea57f440f7f410e7b0bea0176f4c`.
+# 0. Mission after the architecture reset
 
-**Target:** turn the current research prototype into a production-grade, integration-ready ingestion subsystem while preserving or improving useful collection capability.
+The goal is no longer merely to harden a Twikit-based X scraper.
 
-**Stated design envelope:** the existing blueprint claims roughly 50,000–100,000+ items/day. That is only about 0.6–1.2 items/sec on average, but the design should tolerate burst traffic, worker restarts, dependency failures, duplicate delivery, and later integration into a substantially larger system.
+The target is an independently owned X data-ingestion subsystem with:
 
-### Status legend
+- stable capability contracts;
+- a durable, horizontally scalable control plane;
+- first-party ownership of the primary X protocol implementation;
+- reference libraries used as research inputs rather than protocol authorities;
+- raw immutable provenance;
+- versioned protocol operations/parsers;
+- protocol health/drift detection;
+- staged candidate discovery, canary validation, promotion and rollback;
+- bounded self-healing with explicit escalation when automatic repair is unsafe;
+- clean integration into a larger ingestion system later.
 
-- `[ ]` not implemented
-- `[~]` partially implemented / replacement in progress
+Public platforms such as TwitterAPI.io are used as a **capability completeness benchmark**, not as a private architecture specification and not as a list of routes to clone one-for-one.
+
+---
+
+# 1. Status legend
+
+- `[ ]` not started
+- `[~]` partially implemented / migration in progress
 - `[x]` implemented and verified to the level recorded in `implemented.md`
-- `P0` correctness, data-loss, security, or system-startup blocker
-- `P1` production blocker / major architectural debt
-- `P2` scale, operability, integration, or quality improvement
-
-## 1. What actually exists today
-
-The executable system is currently a flat Python repository with these effective components:
-
-```text
-Task producers / utilities
-  seed_test.py
-  task_replay.py
-        |
-        | currently PostgreSQL only
-        v
-  worker_tasks table
-
-Redis list queue: queue:x_tasks
-        |
-        | LPOP
-        v
-worker.py
-  |- service_tokens lease lookup in PostgreSQL
-  |- Twikit collection path
-  |- optional Playwright recovery path
-  |- Pydantic normalization
-  `- analytics_parser.py -> PostgreSQL
-                             |
-                             |- social_insights_feed
-                             |- keyword_hourly_rollups
-                             |
-                             |- analytics_alerts.py
-                             |- analytics_briefs.py
-                             `- api_server.py
-
-Session maintenance
-  token_refresh_service.py
-  bulk_account_seeder.py
-
-Infrastructure
-  docker-compose.yml -> PostgreSQL + Redis + schema initializer
-  systemd/* -> currently empty files
-```
-
-The architecture document describes a more complete system than the repository currently contains. In particular, the documented deployment units are empty, the documented `ingestion_engine.py` is absent, and there is no dependency manifest, application Dockerfile, CI pipeline, migration system, test suite, or working queue producer/dispatcher connecting PostgreSQL tasks to Redis.
-
-## 2. Proposed target architecture
-
-Do not patch the current split-brain design indefinitely. Move toward this boundary:
-
-```text
-Query / schedule / replay request
-            |
-            v
-PostgreSQL task ledger + transactional outbox
-            |
-            v
-Outbox dispatcher
-            |
-            v
-Redis Streams consumer group --------------+
-            |                               |
-            v                               | reclaim unacked work
-Ingestion workers                           |
-            |                               |
-            v                               |
-SourceAdapter interface                     |
-  |- primary structured collector           |
-  |- explicitly enabled recovery adapter    |
-  `- fixture/mock adapter                   |
-            |
-            v
-Raw observation / provenance store
-            |
-            +--> canonical source objects
-            +--> engagement observations
-            +--> idempotent rollups
-                       |
-                       +--> alert engine
-                       +--> brief engine
-                       `--> read API
-
-Control plane:
-  account/session metadata -> lease manager -> SecretStore reference
-
-Cross-cutting:
-  structured logging + metrics + tracing + tests + migrations + CI
-```
-
-### Architectural rules for the target
-
-1. **PostgreSQL is the durable control-plane source of truth.** Redis is delivery/acceleration, not the only place a task exists.
-2. **Redis transport uses acknowledgement semantics**, preferably Streams + consumer groups rather than destructive list pops.
-3. **Collection is behind an adapter interface.** Twikit or any future transport can fail/change without contaminating queue, persistence, analytics, or API code.
-4. **Canonical post identity and observations are separate.** A source object is not the same thing as a later measurement of its engagement counters.
-5. **Secrets are not mixed with session state.** Credentials/session cookies live behind a secret abstraction or encrypted representation, not an ambiguous plaintext `token_value` column.
-6. **Every replayable operation is idempotent and auditable.**
-7. **Integration boundaries are explicit.** The subsystem must later be embeddable into a larger system without requiring a rewrite of its core state machine.
+- `[D]` architecture/design decided but runtime implementation not complete
+- `BLOCKED-USER` requires user/platform information before that specific item can be finalized
 
 ---
 
-# P0 — Correctness and breakage
+# 2. Work already completed and preserved
 
-## P0-01 — Repair the broken PostgreSQL/Redis task pipeline
+The architecture reset **does not discard Segments 1–3**.
 
-**Current defect**
+## [x] Segment 1 — durable task control plane
 
-- `seed_test.py` inserts `PENDING` rows into `worker_tasks`.
-- `task_replay.py` also recreates tasks only in `worker_tasks`.
-- `worker.py` does not lease from `worker_tasks`; it only `LPOP`s `queue:x_tasks` from Redis.
-- No repository component publishes DB tasks into that Redis list.
-- `checkout_task(worker_id)` never updates the DB row to `RUNNING`, never writes `leased_at`, and does not use `worker_id`.
-- A worker can therefore be completely idle while PostgreSQL contains pending work.
+Verified implementation includes:
 
-**Required redesign**
+- PostgreSQL authoritative task ledger;
+- idempotency keys;
+- transactional outbox;
+- Redis Streams consumer groups;
+- outbox claim leases;
+- durable task state transitions;
+- ACK only after durable state transitions;
+- persistent local Redis configuration;
+- migrations/CI baseline.
 
-- [ ] Make `worker_tasks` the authoritative task ledger.
-- [ ] Add durable task identity/idempotency keys.
-- [ ] Add a transactional outbox row in the same PostgreSQL transaction that creates/retries a task.
-- [ ] Add an outbox dispatcher that publishes to a Redis Stream.
-- [ ] Consume with Redis consumer groups (`XREADGROUP`) and acknowledge only after the durable task state is committed.
-- [ ] Reclaim abandoned pending entries after lease expiry rather than losing them on process death.
-- [ ] Make task state transitions explicit: `PENDING -> ENQUEUED -> RUNNING -> DONE`, with `RETRY_SCHEDULED` and `DEAD_LETTER` branches.
-- [ ] Track `lease_owner`, `lease_started_at`, `lease_expires_at`, `completed_at`, and `updated_at`.
-- [ ] Use `next_run_at` for real scheduled retry delivery.
-- [ ] Close Redis clients during graceful shutdown.
+## [x] Segment 2 — worker lease/crash recovery
 
-**Acceptance**
+Verified implementation includes:
 
-- Killing a worker after receiving a task but before completion does not lose the task.
-- Re-running a producer with the same idempotency key does not create duplicate logical work.
-- DB task state and Redis delivery state can be reconciled automatically.
-- `running_tasks` reflects real running work.
+- task execution leases;
+- lease heartbeats;
+- Redis pending-entry idle refresh;
+- stale-owner fencing;
+- deterministic crash recovery tests;
+- cancellation after durable lease loss.
 
-## P0-02 — Fix session/token lease concurrency
+## [x] Segment 3 — retry/dead-letter/replay lifecycle
 
-**Current defect**
+Verified implementation includes:
 
-`TokenRepository.checkout_token()` row-locks a candidate only during a short transaction and leaves it `ACTIVE`. After the transaction releases, another worker can lease the same token immediately. `last_leased_at` changes ordering but is not an exclusive lease.
+- durable scheduled retries;
+- delivery-generation rollover;
+- stale-generation rejection;
+- retry exhaustion;
+- dead-letter archive;
+- selective replay;
+- replay lineage/audit;
+- retry due-time verification.
 
-**Required redesign**
-
-- [ ] Add lease ownership/expiry (`lease_owner`, `lease_expires_at`) or a dedicated lease table.
-- [ ] Atomically lease only sessions below their configured concurrency limit.
-- [ ] Add configurable per-session concurrency and request budgets.
-- [ ] Release a lease explicitly after work, including error paths.
-- [ ] Add a sweeper for expired leases after worker death.
-- [ ] Distinguish session state (`HEALTHY`, `COOLDOWN`, `REFRESH_REQUIRED`, `REVOKED`) from whether it is currently leased.
-
-**Acceptance**
-
-- Two workers cannot accidentally exceed the same session's configured concurrency.
-- A dead worker does not permanently strand a session.
-
-## P0-03 — Replace exception guessing with a collection error taxonomy
-
-**Current defect**
-
-`worker.py` expects `httpx.HTTPStatusError` to trigger the tier-2 failover path, but the primary collector is Twikit, which has its own exception model. This means expected auth/rate-limit failures can bypass the intended tier transition and fall into the generic retry path.
-
-The configured `REQUEST_TIMEOUT_SECONDS` is also not wired into the current Twikit path, and proxy configuration reaches into internal client objects rather than using a stable adapter boundary.
-
-**Required redesign**
-
-- [ ] Define internal exception classes such as `AuthenticationFailure`, `RateLimited`, `TransientNetworkFailure`, `CollectorChanged`, `MalformedResponse`, and `PermanentTaskFailure`.
-- [ ] Build a version-pinned Twikit adapter that converts library-specific exceptions into those internal classes.
-- [ ] Contract-test the exact pinned Twikit version.
-- [ ] Apply configured timeout/proxy settings through supported client configuration where available.
-- [ ] Make fallback decisions from internal error classes, not library implementation details.
-- [ ] Track failure class, HTTP/status metadata where safely available, retry-after information, and collector version.
-
-**Acceptance**
-
-- Auth failure, throttling, timeout, malformed response, and dependency breakage each produce deterministic state transitions and metrics.
-
-## P0-04 — Prevent incorrect token reactivation after fallback
-
-**Current defect**
-
-When the original token is cooled down and a failover token or browser path succeeds, `process_task()` still calls `mark_token_active(token.id)` on the original token. A known-bad token can therefore be reactivated immediately after a successful fallback.
-
-**Required redesign**
-
-- [ ] Return structured execution metadata including which session/adapter actually succeeded.
-- [ ] Centralize lease release and session-state updates in one state machine.
-- [ ] Never mutate original-session health merely because another collector succeeded.
-- [ ] Add state-transition tests for primary success, primary auth failure + failover success, primary throttle + retry, and complete failure.
-
-## P0-05 — Correct canonical identity, deduplication, and engagement semantics
-
-**Current defect**
-
-`analytics_parser.py` uses a text hash to find an existing row before insert. If a matching text hash is found, it **adds** incoming likes/retweets to the stored values. Re-observing the same or copied text therefore creates artificial engagement. It can also merge distinct posts/authors that happen to contain the same normalized text.
-
-The blueprint says repeated observations preserve the highest counters, but this special hash path does not do that.
-
-There is also a race: `content_text_hash` is indexed but not unique, so concurrent workers can both see no matching hash and insert separate rows.
-
-**Required redesign**
-
-- [ ] Treat `(platform, platform_object_id)` as canonical identity.
-- [ ] Use content hashes for clustering/similarity, not destructive identity merging.
-- [ ] Add a separate engagement-observation table keyed by source object + capture time/run.
-- [ ] Store `first_seen_at`, `last_seen_at`, `source_created_at`, and `captured_at` explicitly.
-- [ ] Canonical current counters should be `GREATEST(current, observed)` where counters are monotonic; preserve raw observations for analysis.
-- [ ] Remove read-before-write dedup races; enforce identity with unique constraints and atomic upserts.
-- [ ] Preserve author/source provenance even for identical text.
-- [ ] Make multilingual hashing/tokenization Unicode-aware.
-
-**Acceptance**
-
-- Observing one post ten times does not produce 10x engagement or 10x volume.
-- Two different posts with identical text remain separately identifiable.
-
-## P0-06 — Make rollups idempotent and transactional
-
-**Current defect**
-
-Every parsed record increments `keyword_hourly_rollups`, including re-observations and content-hash collisions. A task can therefore inflate trend volume without new posts. Rollup updates happen as many sequential SQL statements and are not wrapped atomically with the canonical write.
-
-The rollup bucket is hour-truncated, while `analytics_alerts.py` queries it as if it represented a true trailing 60-minute window. Near hour boundaries that does not represent the requested interval.
-
-**Required redesign**
-
-- [ ] Decide whether rollups count unique posts, observations, or both; encode separate metrics if both matter.
-- [ ] Make rollup contribution idempotent using a contribution/event ID.
-- [ ] Prefer minute-level buckets or compute a correct time-window model.
-- [ ] Bulk-write keyword contributions instead of one DB round trip per word.
-- [ ] Keep canonical persistence and derived-event publication transactionally consistent.
-- [ ] Add a rebuildable rollup pipeline so analytics can be recomputed from source observations.
-
-## P0-07 — Redesign session refresh and secret storage
-
-**Current defect**
-
-The same `service_tokens.token_value` field is used as a JSON cookie blob by the worker/seeder but is parsed as `{email,password,totp_secret}` by `token_refresh_service.py`. These representations are incompatible.
-
-The refresh implementation also generates a current TOTP value and passes that value into Twikit's `totp_secret` parameter. Twikit's documented contract expects the underlying TOTP secret and generates the one-time code internally. This must be fixed against a pinned library version rather than guessed.
-
-`bulk_account_seeder.py` contains example password/TOTP material directly in source, establishing the wrong production pattern.
-
-**Required redesign**
-
-- [ ] Split account metadata, session state, and credential secret references.
-- [ ] Introduce a `SecretStore` interface (production implementation backed by an approved secret manager/KMS; local development implementation via explicit local secret file/env with safe permissions).
-- [ ] Store session cookies/tokens encrypted at rest if persistence is necessary.
-- [ ] Never put passwords or TOTP seeds in source, logs, task payloads, or general-purpose DB columns.
-- [ ] Pass the actual TOTP secret according to the pinned adapter contract; do not pre-generate and mislabel a code.
-- [ ] Distinguish transient refresh failures from permanent revocation; do not revoke an identity because of one network/library failure.
-- [ ] Add refresh attempt counters, backoff, last-success, and reason codes.
-
-## P0-08 — Repair the executive brief pipeline
-
-**Current defect**
-
-`analytics_briefs.py` sends a chat-completions-shaped request to `https://openai.com`, which is not an API request endpoint. The default API key is a fake non-empty string, so an unconfigured service attempts a doomed network call instead of failing configuration validation.
-
-It also holds a PostgreSQL connection while performing the external model request, has no idempotency per time window, and directly embeds untrusted collected text into model context without a strong data/instruction boundary.
-
-**Required redesign**
-
-- [ ] Create a provider-agnostic `BriefGenerator` interface.
-- [ ] Validate provider configuration at startup; no fake default credential.
-- [ ] Use the provider's supported SDK/API behind the adapter.
-- [ ] Fetch source data, release DB connection, perform model call, then reacquire DB connection to persist.
-- [ ] Add bounded retries/timeouts and circuit breaking for provider failures.
-- [ ] Give each brief an idempotency key/window (`window_start`, `window_end`, model/provider/version).
-- [ ] Store evidence/source object IDs used to produce each brief.
-- [ ] Treat collected text strictly as untrusted data and use structured output validation.
-- [ ] Enforce input-size/token budgets deterministically.
-
-## P0-09 — Fix API semantic breakage and health behavior
-
-**Current defect**
-
-- `/api/v1/alerts/live` does not read `system_operational_alerts`. It maps `sentiment_label` into `target_keyword`, likes into event volume, and task rows into alerts.
-- `/api/v1/trends/spikes` recomputes word counts over raw text rather than using the analytics model named by the repository.
-- `/healthz` always returns `{"status":"ok"}` even when database initialization failed.
-- The blueprint calls the API secured, but no authentication/authorization layer exists.
-
-**Required redesign**
-
-- [ ] Serve alerts from the actual alerts model/table.
-- [ ] Define trend response semantics and source them from the correct rollup/trend materialization.
-- [ ] Split liveness (`/healthz`) from readiness (`/readyz` checking DB and required queue dependency).
-- [ ] Add API authentication appropriate to the larger-system integration boundary.
-- [ ] Add pagination, bounded limits, stable ordering, and time-range filters.
-- [ ] Add request correlation IDs and API metrics.
-- [ ] Add contract tests matching SQL output to response models.
-
-## P0-10 — Make the repository reproducibly runnable
-
-**Current defect**
-
-- No `pyproject.toml`, requirements lock, or equivalent dependency declaration exists.
-- There is no application `Dockerfile`.
-- All systemd service files and nginx config currently present are empty.
-- Compose only launches PostgreSQL/Redis/schema initialization, not the application services.
-- The DB initializer does not explicitly provide the PostgreSQL password to `psql`, so the stock Compose path needs an integration test/fix for non-interactive authentication.
-- `python-3.11.9.pkg` is a binary artifact in the repository with no documented role.
-- No `.env.example`, `.gitignore`, or startup/readiness validation is present.
-
-**Required redesign**
-
-- [ ] Add a real Python project manifest and locked dependency set.
-- [ ] Pin Python/runtime dependency versions known to pass tests.
-- [ ] Add application container image(s) or a documented alternative deployment artifact.
-- [ ] Complete service definitions or remove misleading empty placeholders in favor of the chosen deployment method.
-- [ ] Fix Compose initialization/auth, add health checks, private service networking, Redis persistence if Streams are authoritative for delivery, and avoid exposing data services unnecessarily.
-- [ ] Classify/remove the unexplained binary package artifact after confirming it has no runtime purpose.
-- [ ] Add `.env.example` containing names/default-safe values only.
-- [ ] Add startup configuration validation.
+These components become the **Control Plane** described in `architecture.md`.
 
 ---
 
-# P1 — Production architecture and maintainability
+# 3. Architecture reset — current documentation pass
 
-## P1-01 — Create a proper package layout and service boundaries
+## [D] Define target architecture
 
-Move away from unrelated root-level scripts toward an importable package, for example:
+Deliverables:
 
-```text
-src/xingestion/
-  config.py
-  logging.py
-  db/
-  queue/
-  collectors/
-  sessions/
-  ingestion/
-  analytics/
-  briefs/
-  api/
-  models/
-  observability/
-commands/
-  worker.py
-  dispatcher.py
-  alert_worker.py
-  brief_worker.py
-  cleanup.py
-  replay.py
-migrations/
-tests/
-```
+- `architecture.md` — authoritative architecture and hard module boundaries;
+- rewritten `plan.md` — segment-by-segment migration roadmap;
+- updated `AGENTS.md` — durable first-party protocol-ownership rules;
+- `implemented.md` entry recording that this pass changed architecture/docs only.
 
-- [ ] Centralize typed configuration rather than independently parsing env vars in each script.
-- [ ] Centralize DB/Redis client lifecycle.
-- [ ] Separate domain state machines from CLI/service entrypoints.
-- [ ] Keep collection-specific dependencies isolated in `collectors/`.
-
-## P1-02 — Introduce an explicit `SourceAdapter` contract
-
-- [ ] Define normalized collection request/result models.
-- [ ] Preserve raw provider payloads or a controlled lossless subset for research provenance.
-- [ ] Support pagination/cursors/checkpoints instead of a single fixed `count=20` call.
-- [ ] Track adapter version and collection method per run.
-- [ ] Support fixture/mock adapter without branching core production logic on `MOCK_MODE` everywhere.
-- [ ] Keep any browser recovery mechanism isolated, explicitly enabled, observable, and contract-tested; do not let it silently produce lower-fidelity records presented as equivalent data.
-
-## P1-03 — Add scheduler/query management and resumability
-
-The current repository has one-shot tasks but no persistent query definition or recurring scheduler.
-
-- [ ] Add research query/source configuration records.
-- [ ] Add schedule/cadence and enable/disable state.
-- [ ] Store per-query checkpoints/cursors/time windows.
-- [ ] Detect and measure collection gaps.
-- [ ] Support controlled backfill without colliding with live ingestion.
-- [ ] Add per-query priority and budgets.
-
-## P1-04 — Version the database schema
-
-- [ ] Convert `schema_analytics.sql` into numbered migrations.
-- [ ] Add schema version tracking.
-- [ ] Add check constraints/enums for task/session states where appropriate.
-- [ ] Add foreign keys and unique constraints for task lineage, dead letters, observations, alerts, and brief windows.
-- [ ] Add indexes based on real API/worker query patterns.
-- [ ] Test migration from the current schema with representative data rather than only fresh database creation.
-
-## P1-05 — Preserve research provenance and auditability
-
-Add first-class concepts for:
-
-- [ ] `ingestion_run_id`
-- [ ] source/platform
-- [ ] source query/task ID
-- [ ] source object ID
-- [ ] source-created timestamp
-- [ ] captured/observed timestamp
-- [ ] collector + collector version
-- [ ] normalized record version
-- [ ] raw-payload reference/hash
-- [ ] retry/fallback path used
-
-This enables later reproducibility and integration into a larger analytical system.
-
-## P1-06 — Replace naive keyword alerting with defined anomaly semantics
-
-Current alerting is an absolute threshold (`tweet_count > N`), not a velocity anomaly model, and it writes the same alert repeatedly every scan.
-
-- [ ] Define a baseline method (for example rolling median/MAD or another robust baseline appropriate to observed data).
-- [ ] Define minimum absolute volume so tiny baselines do not create noise.
-- [ ] Add alert identity/dedup key, first-triggered, last-seen, severity, state, and resolution.
-- [ ] Add cooldown/debounce so one spike does not create a new database alert each minute.
-- [ ] Store the baseline and calculation inputs necessary to explain why an alert fired.
-
-## P1-07 — Rework brief generation around evidence, not raw top-like rows
-
-- [ ] Feed briefs from defined trend/alert clusters, with source IDs and quantitative evidence.
-- [ ] Preserve citations/references back to source rows.
-- [ ] Store model/provider/prompt version and generation window.
-- [ ] Make repeated generation for the same window idempotent unless an explicit regeneration version is requested.
-- [ ] Add deterministic schema validation for the model output.
-
-## P1-08 — API hardening
-
-- [ ] Version and document API contracts.
-- [ ] Add integration auth/authorization.
-- [ ] Add rate limiting at gateway/application boundary as appropriate.
-- [ ] Add pagination and query bounds to avoid accidental full scans.
-- [ ] Add database statement timeouts for read endpoints.
-- [ ] Add API error taxonomy instead of generic 500s for all data failures.
-- [ ] Add readiness, dependency state, build SHA/version, and optional metrics endpoint.
-- [ ] Fill gateway config only after the intended deployment topology is decided.
-
-## P1-09 — Observability
-
-- [ ] Structured logs with correlation fields instead of string-only messages.
-- [ ] Prometheus/OpenTelemetry-compatible metrics for queue depth/age, task lifecycle, collection results by error class, session health, throttling, DB/Redis latency, ingestion throughput, duplicate/re-observation ratio, analytics lag, brief generation latency/failures, and API latency/status.
-- [ ] Distributed trace/correlation propagation from task -> collection -> persistence -> analytics where useful.
-- [ ] Alerts for stuck queue, zero-ingestion periods, retry storms, session-pool exhaustion, high dead-letter rate, database saturation, and stale briefs.
-
-## P1-10 — Safe retention and replay
-
-Current `db_cleanup.py` deletes all `DONE` tasks immediately, which removes useful operational history. `task_replay.py` deletes dead-letter rows after recreating tasks, destroying failure history.
-
-- [ ] Define retention independently for raw observations, canonical records, engagement observations, task history, dead letters, alerts, rollups, and briefs.
-- [ ] Keep replay history immutable; mark a dead letter as replayed and link the new task rather than deleting the archive row.
-- [ ] Make replay selective by task/error/date/query.
-- [ ] Add dry-run and max-count controls.
-- [ ] Add poison-message protection/replay generation limits.
-- [ ] Batch large retention deletes; rely on normal PostgreSQL autovacuum unless measured evidence requires explicit maintenance jobs.
+No runtime behavior should change in this architecture-reset pass.
 
 ---
 
-# P2 — Verification, scale, and larger-system integration
+# 4. Revised implementation roadmap
 
-## P2-01 — Automated test matrix
+Because the scope now includes **first-party protocol ownership and protocol intelligence**, expect approximately **16 focused implementation segments remaining (Segments 4–19)**. Some can merge if implementation proves smaller; some may split if a correctness boundary requires it.
 
-### Unit
-
-- [ ] Pydantic/normalization behavior, including Unicode/multilingual text.
-- [ ] error classification.
-- [ ] retry/backoff calculation.
-- [ ] task/session state transitions.
-- [ ] deduplication/idempotency.
-- [ ] analytics calculations.
-
-### Integration
-
-- [ ] PostgreSQL migrations and task leasing.
-- [ ] Redis Stream publish/consume/ack/reclaim.
-- [ ] worker crash after delivery but before DB commit.
-- [ ] Redis unavailable during outbox dispatch.
-- [ ] DB unavailable during completion.
-- [ ] duplicate delivery.
-- [ ] dead-letter and selective replay.
-- [ ] API response/schema tests.
-
-### Collector contract
-
-- [ ] Recorded/fixture responses for the pinned primary adapter.
-- [ ] auth failure classification.
-- [ ] throttling classification.
-- [ ] malformed/changed response classification.
-- [ ] pagination/checkpoint continuation.
-- [ ] live tests only behind an explicit gate and separate credentials/configuration.
-
-## P2-02 — CI quality gates
-
-- [ ] formatter/linter (`ruff` or equivalent).
-- [ ] type checking for stable domain/service interfaces.
-- [ ] unit + integration tests.
-- [ ] migration validation.
-- [ ] dependency vulnerability audit.
-- [ ] secret scanning.
-- [ ] container build.
-- [ ] test coverage visibility without treating percentage alone as correctness.
-
-## P2-03 — Load and soak testing
-
-Define measurable targets rather than claiming scale from architecture alone.
-
-Initial acceptance target based on the existing blueprint:
-
-- [ ] sustain >=100,000 normalized records/day equivalent under representative batching.
-- [ ] survive burst load substantially above average without task loss.
-- [ ] zero acknowledged task loss during forced worker termination tests.
-- [ ] bounded queue age under normal capacity.
-- [ ] bounded DB connection usage under brief/API/worker concurrency.
-- [ ] measured p50/p95/p99 collection, persistence, and API latency.
-- [ ] 24-hour soak without unbounded memory/connection growth.
-
-Exact thresholds should be finalized after the deployment hardware and upstream integration contract are known.
-
-## P2-04 — Larger-system integration contract
-
-- [ ] Define inbound task/query contract independently of Redis implementation.
-- [ ] Define outbound normalized event schema/version.
-- [ ] Add event/schema versioning and backward compatibility rules.
-- [ ] Add health/metrics endpoints suitable for orchestration.
-- [ ] Externalize secrets, identity management, logging sink, and telemetry exporters.
-- [ ] Support correlation/run IDs supplied by the parent system.
-- [ ] Document resource requirements and horizontal-scaling behavior.
+The segmentation is intentional: each segment should normally fit one bounded implementation/research/verification pass and leave the repository in a coherent state.
 
 ---
 
-# 3. Known file-specific defects to retain during implementation
+# PHASE A — Stable contracts before replacing the collector
 
-This is a checklist so individual bugs are not lost when larger components are rewritten.
+## [ ] Segment 4 — Capability contracts and planner boundary
 
-## `worker.py`
+### Goal
 
-- [ ] Redis `LPOP` can lose work on crash.
-- [ ] DB task is never marked `RUNNING` during checkout.
-- [ ] `worker_id` is unused in task checkout.
-- [ ] `next_run_at` and `backoff_delay_seconds()` are effectively unused.
-- [ ] DB retry state and Redis requeue are not atomic.
-- [ ] token checkout is not an exclusive lease.
-- [ ] Twikit errors are not normalized to the exception path used for failover.
-- [ ] configured request timeout is not applied to the primary collector.
-- [ ] original token can be marked active after fallback succeeds.
-- [ ] browser recovery URL construction is malformed and query is not encoded.
-- [ ] browser recovery emits synthetic text-hash IDs and loses author/engagement provenance; it must not be silently treated as equivalent fidelity.
-- [ ] DB startup failure logs a mock fallback but actually waits indefinitely; mock mode still depends on DB/task/session infrastructure.
-- [ ] Redis client is not explicitly closed.
-- [ ] task type is not validated/dispatched; all tasks are treated as keyword search.
-- [ ] primary collection fetches only a small single page with no persistent continuation/checkpoint.
+Make the rest of the system request **capabilities**, not Twikit functions or X endpoint names.
 
-## `analytics_parser.py`
+### Build
 
-- [ ] content-hash match adds engagement counters and corrupts totals.
-- [ ] text hash can merge distinct source objects.
-- [ ] hash lookup + write has a concurrency race.
-- [ ] `ingested_at` can be moved forward on re-observation.
-- [ ] rollups count re-observations as new posts.
-- [ ] rollup DB writes are per-keyword and inefficient.
-- [ ] feed write and rollup writes are not one idempotent event transaction.
-- [ ] ASCII-only keyword extraction excludes most multilingual research content.
-- [ ] naive local `datetime.now()` is used for a timezone-aware database field when `ingested_at` is missing.
+- `Capability` catalog/enum/registry;
+- typed `CapabilityRequest` models;
+- typed canonical capability result/page models;
+- cursor/checkpoint abstraction;
+- fidelity/freshness/provenance requirements;
+- `AcquisitionPlan` model;
+- `CapabilityPlanner` interface;
+- update worker task payload contract from `X_KEYWORD_SEARCH`-specific assumptions toward generic capability requests;
+- compatibility adapter for existing search tasks so current tests keep working.
 
-## `analytics_alerts.py`
+### Hard boundary
 
-- [ ] absolute threshold is mislabeled as velocity anomaly detection.
-- [ ] same persistent spike is inserted every polling cycle.
-- [ ] hour-truncated rollups do not implement a correct rolling 60-minute window.
-- [ ] no resolution/debounce/severity model.
+The capability layer must contain **zero** Twikit types, X query IDs, browser selectors, internal endpoint paths, or provider-specific URLs.
 
-## `analytics_briefs.py`
+### Acceptance
 
-- [ ] invalid/non-API model endpoint.
-- [ ] fake non-empty API key default masks missing configuration.
-- [ ] DB connection is held across external network/model request.
-- [ ] no generation-window idempotency.
-- [ ] no structured output validation.
-- [ ] untrusted collected text is mixed directly into model context without a strong instruction/data boundary.
-- [ ] no input-size budget or evidence lineage.
+- existing search workflow can be expressed as `SEARCH_TWEETS`;
+- task/control-plane tests continue to pass;
+- a fake second capability can be planned without modifying TaskRepository/Redis code;
+- contract versioning tests exist.
 
-## `api_server.py`
+### Isolation value
 
-- [ ] alerts endpoint reads task/feed rows rather than actual alert rows.
-- [ ] `target_keyword` is populated from sentiment.
-- [ ] trend endpoint bypasses precomputed analytics and performs expensive raw-text tokenization.
-- [ ] liveness reports OK when DB can be unavailable.
-- [ ] API is not actually secured despite documentation.
-- [ ] no pagination/time-range contract.
-
-## `token_refresh_service.py`
-
-- [ ] cookie JSON is misinterpreted as credential JSON.
-- [ ] current TOTP code is passed where Twikit documents a TOTP secret.
-- [ ] any refresh exception can revoke an account, including potentially transient failures.
-- [ ] no graceful shutdown or bounded refresh attempt policy.
-
-## `bulk_account_seeder.py`
-
-- [ ] source code contains an example username/password/TOTP secret pattern that must not be used for real identities.
-- [ ] credentials are coupled directly to login logic rather than secret references.
-- [ ] resulting DB row contains cookies only, incompatible with the refresh service's expectation.
-
-## `task_replay.py`
-
-- [ ] recreated task is not delivered to Redis, so current worker does not receive it.
-- [ ] dead-letter history is deleted on replay.
-- [ ] all dead letters replay at once.
-- [ ] attempts reset without replay generation/poison-task controls.
-
-## `seed_test.py`
-
-- [ ] creates DB tasks but not Redis deliveries.
-- [ ] `ON CONFLICT DO NOTHING` has no meaningful task uniqueness constraint to conflict on, so repeated seeding duplicates logical tasks.
-- [ ] mock token strings are not cookie JSON and therefore only work when collection is bypassed.
-
-## `db_cleanup.py`
-
-- [ ] completed task audit history is deleted immediately rather than by a defined retention policy.
-- [ ] dead letters/alerts/rollups/briefs have no coherent retention strategy.
-- [ ] explicit `VACUUM ANALYZE` every cleanup cycle should be justified by measurements rather than used as default maintenance.
-- [ ] large deletions are not batched.
-
-## `docker-compose.yml` / `systemd/`
-
-- [ ] application processes are not in Compose.
-- [ ] DB/Redis ports are published directly by default.
-- [ ] Redis has no persistent volume/configuration suitable for durable Streams.
-- [ ] DB initializer authentication/config needs a working non-interactive path.
-- [ ] all checked-in systemd/nginx files are empty.
-
-## repository-level
-
-- [ ] no dependency manifest/lock.
-- [ ] no tests.
-- [ ] no CI.
-- [ ] no application Dockerfile.
-- [ ] no versioned migrations.
-- [ ] no `.env.example` / startup configuration schema.
-- [ ] no normal README/runbook separate from an architecture document that currently overstates implementation.
-- [ ] unexplained `python-3.11.9.pkg` binary artifact should be classified or removed.
+After this segment, changing how X search works should not require changing queue/task models.
 
 ---
 
-# 4. Implementation order
+## [ ] Segment 5 — Session, identity, budget and secret boundary
 
-The order matters because several apparent local bugs are symptoms of the same state-model problem.
+### Goal
 
-## Phase A — Reproducible baseline and safety net
+Turn current token leasing into a proper Session Manager independent of protocol implementation.
 
-1. Add project/dependency manifest and pinned versions.
-2. Add test harness and local integration stack.
-3. Add typed configuration/startup validation.
-4. Convert current schema into migration `0001` without changing semantics.
-5. Add baseline tests that reproduce the known queue, dedup, API, and session-state defects before changing architecture.
+### Build
 
-**Gate:** current behavior can be reproduced in a clean environment and defects have executable regression tests where feasible.
+- separate account identity metadata, session state and credential secret references;
+- explicit session health state vs lease state;
+- `SessionLease` contract;
+- per-session `max_concurrency` enforcement tests;
+- expired lease recovery;
+- per-capability/operation usage budget/cooldown records;
+- session affinity support for request chains;
+- `SecretStore` interface;
+- safe local-development SecretStore implementation;
+- remove ambiguous "cookies OR credentials in token_value" semantics from new code paths;
+- migration path from current `service_tokens` representation.
 
-## Phase B — Durable control plane
+### User dependency
 
-1. Migrate task schema/state model.
-2. Add outbox + Redis Streams dispatcher.
-3. Add consumer group lease/ack/reclaim behavior.
-4. Rewrite retry/dead-letter/replay around durable state and idempotency.
-5. Add session lease semantics.
+`SECRETS-01`: production secret backend choice is **not required** to build the interface/local implementation. Final production backend remains `BLOCKED-USER` until infrastructure choice exists.
 
-**Gate:** forced worker termination and Redis/DB interruption tests show no acknowledged task loss and no duplicate logical completion.
+### Acceptance
 
-## Phase C — Collection adapter and session subsystem
+- multiple workers cannot exceed one session's configured concurrency;
+- dead worker cannot strand a session;
+- cooldown/refresh/quarantine are deterministic;
+- capability planner can request an auth class without knowing credentials;
+- no real secret appears in logs/tasks/tests.
 
-1. Introduce `SourceAdapter` and normalized error taxonomy.
-2. Move Twikit usage behind pinned adapter.
-3. Correct session representation/secret handling.
-4. Implement controlled refresh state machine.
-5. Add checkpoint/pagination support.
-6. Isolate recovery collector behind the same result/provenance contract.
+### Isolation value
 
-**Gate:** fixture tests exercise successful pagination and each major failure class; live collector verification is separately gated.
-
-## Phase D — Data correctness
-
-1. Migrate to canonical object + observation/provenance schema.
-2. Correct engagement semantics.
-3. Make analytical contributions idempotent and rebuildable.
-4. Add multilingual-safe normalization.
-5. Backfill/migrate existing records with explicit assumptions.
-
-**Gate:** duplicate-delivery/re-observation tests produce stable canonical counts and rebuilds reproduce rollups.
-
-## Phase E — Analytics, briefs, and API
-
-1. Correct anomaly model and alert state/dedup.
-2. Build evidence-backed brief generation adapter with structured outputs.
-3. Correct API endpoints/response semantics.
-4. Add authentication, pagination, readiness, and integration metadata.
-
-**Gate:** API contract tests and analytics fixture tests pass; brief generation cannot mutate source data and is idempotent per window.
-
-## Phase F — Deployment and operations
-
-1. Build application image and local Compose stack.
-2. Complete/remove systemd/nginx placeholders according to chosen topology.
-3. Add CI gates, metrics/tracing, dashboards/alerts, backup/restore notes, and runbooks.
-4. Run load, fault, and soak tests.
-
-**Gate:** a clean deployment can be built from the repository with no undocumented manual file creation and passes the production acceptance suite.
+A session-management change does not change queue logic, protocol operation definitions, or normalized schemas.
 
 ---
 
-# 5. Production acceptance definition
+## [ ] Segment 6 — First-party protocol foundation and raw envelope
 
-Do **not** label the project production-ready until all of the following are demonstrated:
+### Goal
 
-- [ ] clean reproducible build from declared dependencies.
-- [ ] versioned migration from current schema.
-- [ ] no plaintext real credentials/session material in repository or logs.
-- [ ] no acknowledged task loss under forced worker termination.
-- [ ] deterministic retry/dead-letter/replay behavior.
-- [ ] exclusive/bounded account-session leasing.
-- [ ] duplicate observations cannot inflate canonical engagement or unique-post volume.
-- [ ] collection dependency failures map to explicit internal error states.
-- [ ] API alert/trend/health endpoints expose what their names claim.
-- [ ] readiness fails when required dependencies are unavailable.
-- [ ] analytics and brief generation are idempotent/reproducible by window.
-- [ ] observability exposes queue lag, failure reasons, session health, throughput, and dependency saturation.
-- [ ] integration and fault-injection tests pass in CI.
-- [ ] sustained-load/soak results are recorded against known hardware and configuration.
-- [ ] deployment/runbook accurately describes the files that actually exist.
+Create the first runtime layer that **we own** for speaking to known X protocol operations.
 
-## Immediate recommended implementation slice
+### Build
 
-Start with **Phase A + P0-01/P0-02**, not collector tweaks. Until task delivery and session leases are durable, improvements to extraction can make the system faster while still losing work, duplicating use of sessions, and reporting incorrect operational state.
+- `OperationDefinition` model;
+- operation version/status registry (`CANDIDATE/CANARY/STABLE/DEGRADED/QUARANTINED/RETIRED`);
+- first-party reusable HTTP/protocol client;
+- supported timeout/connection pooling;
+- session/cookie attachment via Session Manager;
+- sanitized request fingerprinting;
+- response schema fingerprinting;
+- protocol error taxonomy;
+- `RawAcquisitionEnvelope`;
+- raw payload hash/reference abstraction;
+- versioned parser interface;
+- `XInternalWebAdapter` skeleton;
+- retain `TwikitSearchAdapter` only as a transitional legacy/reference adapter.
+
+### Important
+
+This segment creates **protocol infrastructure**, not broad endpoint coverage.
+
+### Acceptance
+
+- fixture operation can execute through first-party transport;
+- raw envelope includes operation/parser/session/task provenance;
+- protocol transport is testable without Twikit;
+- operation versions are immutable after stable promotion in tests;
+- control-plane tests remain unchanged/passing.
+
+### Isolation value
+
+Protocol changes remain below CapabilityPlanner; data consumers receive a standardized raw envelope.
+
+---
+
+# PHASE B — Prove the architecture with one complete first-party capability
+
+## [ ] Segment 7 — First-party `SEARCH_TWEETS` vertical slice
+
+### Goal
+
+Replace Twikit as the primary implementation for one important capability before expanding breadth.
+
+### Research
+
+- analyze current X search behavior using authorized observable interfaces;
+- study relevant current open-source implementations as references;
+- map request variables/features/auth requirements/pagination;
+- create sanitized fixtures and provenance notes;
+- distinguish independently observed protocol facts from incorporated code.
+
+### Build
+
+- stable `SEARCH_TWEETS` operation definition(s);
+- first-party request builder;
+- parser;
+- cursor pagination;
+- normalized tweet page output;
+- explicit error mapping;
+- legacy Twikit shadow/comparison mode during migration, not primary authority.
+
+### Acceptance
+
+- fixture/contract tests pass without Twikit;
+- gated live validation path exists;
+- pagination works across multiple pages in fixtures/live-gated tests;
+- first-party result normalization satisfies Capability contract;
+- Twikit can be disabled and non-live test suite remains functional.
+
+### User dependency
+
+`LIVE-X-01`: final live certification requires authorized research session/network environment. Implementation and fixture tests can proceed before that.
+
+### Isolation value
+
+When search protocol changes later, only search operation/parser/health state should need modification.
+
+---
+
+## [ ] Segment 8 — Raw data plane and normalization decoupling
+
+### Goal
+
+Stop making successful collection dependent on immediate canonical/analytics parsing.
+
+### Build
+
+- immutable raw acquisition record/storage abstraction;
+- raw payload content addressing/hash;
+- normalized object/event pipeline;
+- explicit parser/normalizer versions;
+- canonical entity + observation provenance;
+- relationship/edge model foundation;
+- reparsing/reprocessing job from raw payload;
+- move analytics rollup side effects out of acquisition transaction where appropriate;
+- preserve idempotency across reprocessing.
+
+### Acceptance
+
+- intentionally broken parser does not lose raw payload;
+- repaired parser can regenerate normalized output from the same raw acquisition;
+- acquisition task success semantics are explicitly defined relative to raw persistence/normalization;
+- analytics failure cannot cause recollection of otherwise safely stored raw data.
+
+### Isolation value
+
+Parser/data-model bugs become replayable data-plane failures rather than collector failures.
+
+---
+
+# PHASE C — Protocol intelligence / staged self-healing
+
+## [ ] Segment 9 — Protocol observation and research lab
+
+### Goal
+
+Create tooling that discovers/records protocol facts without being required for normal production collection.
+
+### Build
+
+- authorized browser network-capture workflow;
+- capture sanitization/redaction;
+- operation/capability correlation tooling;
+- response schema fingerprint generation;
+- fixture builder;
+- historical operation diff tooling;
+- reference-library analyzer/reporting workflow for Twikit/twscrape/other selected implementations;
+- source/version/license provenance records;
+- research artifact storage separate from stable registry.
+
+### Acceptance
+
+- research tooling can produce a candidate operation artifact from a controlled capture;
+- secrets/cookies are redacted before persistence/reporting;
+- research tooling failure does not affect stable protocol workers.
+
+### Isolation value
+
+The "reverse-engineering lab" can change aggressively without destabilizing production acquisition.
+
+---
+
+## [ ] Segment 10 — Capability/operation health and drift detection
+
+### Goal
+
+Know *what broke* before trying to heal it.
+
+### Build
+
+- scheduled protocol/capability probes;
+- operation-health records;
+- last-good/first-bad timestamps;
+- error-rate/latency/parser-failure metrics;
+- schema-fingerprint drift detection;
+- pagination anomaly detection;
+- session-local vs global failure classification;
+- capability health aggregation;
+- degraded/quarantine state transitions;
+- alert/investigation trigger.
+
+### Acceptance
+
+Fixtures simulate:
+
+- auth/session failure;
+- global operation failure;
+- response schema change;
+- parser-only breakage;
+- pagination breakage;
+- transient transport outage.
+
+Health engine must classify them differently.
+
+### Isolation value
+
+Broken protocol versions are marked unhealthy while queue/data planes remain intact.
+
+---
+
+## [ ] Segment 11 — Candidate registry, canary, promotion, rollback and self-heal L1–L3
+
+### Goal
+
+Safely route around known failures and promote validated replacements.
+
+### Build
+
+- candidate operation registry;
+- validation state machine;
+- fixture contract gate;
+- gated live canary gate;
+- stable-vs-candidate comparison;
+- promotion audit;
+- rollback;
+- router selection among multiple stable versions;
+- automatic failover to an already validated stable alternate;
+- investigation package generator for unresolved drift.
+
+### Non-goal
+
+No arbitrary agent/LLM code rewriting directly into production.
+
+### Acceptance
+
+- broken stable A automatically routes to already-valid stable B;
+- bad candidate cannot receive normal production traffic;
+- successful canary can be promoted and rolled back;
+- unresolved drift emits a complete machine-readable investigation package.
+
+### Isolation value
+
+Self-healing operates on protocol registry/routing rather than modifying queue, sessions or canonical schemas.
+
+---
+
+# PHASE D — Expand capability coverage only after one vertical slice + intelligence works
+
+## [ ] Segment 12 — Core tweet capability family
+
+Implement/verify, as observable and required:
+
+- tweets by ID(s);
+- tweet replies;
+- reply sorting variants where supported;
+- quotations;
+- retweeters;
+- thread context;
+- article/detail expansion;
+- advanced search variants.
+
+Each capability requires:
+
+- Capability contract;
+- one or more versioned AcquisitionPlans;
+- operation/parser fixtures;
+- provenance;
+- health probe;
+- pagination tests where applicable.
+
+Acceptance: failure of one tweet operation does not disable other tweet capabilities.
+
+---
+
+## [ ] Segment 13 — User/profile/timeline capability family
+
+Implement/verify:
+
+- user by ID/handle;
+- batch user lookup where beneficial;
+- user search;
+- profile/about metadata;
+- user timeline;
+- tweets + replies timeline where distinct;
+- mentions;
+- checkpoint/pagination semantics.
+
+Acceptance: user entity normalization is shared but operation versions remain independently degradable.
+
+---
+
+## [ ] Segment 14 — Social graph, lists and communities
+
+Implement/verify:
+
+### Graph
+
+- followers with profiles;
+- follower IDs/bulk edges;
+- following;
+- relationship lookup;
+- graph-edge provenance/snapshot semantics.
+
+### Lists
+
+- timeline;
+- members;
+- followers;
+- metadata where needed.
+
+### Communities
+
+- info;
+- timeline/search;
+- membership/edges where observable and required.
+
+Acceptance: high-volume ID/edge acquisition uses a data model optimized for edges rather than pretending every result is a tweet document.
+
+---
+
+## [ ] Segment 15 — Monitoring, incremental ingestion and gap recovery
+
+### Goal
+
+Provide provider-like monitoring without implementing it as naive repeated ad-hoc scraping tasks.
+
+### Build
+
+- persistent monitor/subscription definitions;
+- user/query monitor capability;
+- cursor/checkpoint state;
+- deduplicated incremental delivery;
+- reconnect/backfill/gap detection;
+- catch-up jobs after outage;
+- monitor lag metrics;
+- bounded schedule fanout.
+
+Acceptance:
+
+- stopping workers and restarting them does not create an unobservable collection gap;
+- gap/backfill status is explicit;
+- monitoring uses the same stable capability/protocol contracts as request/response ingestion.
+
+---
+
+# PHASE E — Platformization and integration
+
+## [ ] Segment 16 — Northbound API and parent-system integration contract
+
+### Goal
+
+Expose the ingestion subsystem without leaking its internal PostgreSQL/Redis/protocol layout.
+
+### Build
+
+- versioned Capability API/request contract;
+- asynchronous job submission/status where appropriate;
+- synchronous bounded read paths where appropriate;
+- cursor/page contracts;
+- parent-ingestion event/export contract;
+- correlation/run IDs;
+- stable error taxonomy;
+- compatibility/versioning rules;
+- liveness/readiness.
+
+### User dependency
+
+`PARENT-01` and `AUTH-01` become blocking only for the final parent-specific transport/auth implementation. Provider-neutral contracts can be built first.
+
+Acceptance: parent client does not know Redis stream names, task tables, X operation IDs, or parser versions unless provenance is explicitly requested.
+
+---
+
+## [ ] Segment 17 — Decouple analytics, alerts and briefs from acquisition
+
+### Goal
+
+Turn existing analytics features into downstream consumers rather than ingestion side effects.
+
+### Build
+
+- normalized event/object consumption boundary;
+- idempotent trend/rollup rebuild;
+- correct window semantics;
+- alert dedupe/state/resolution;
+- provider-neutral brief generator;
+- evidence/source references;
+- prompt/data boundary;
+- external model calls outside DB leases;
+- correct API semantics over downstream models.
+
+Acceptance:
+
+- analytics or brief outage cannot stop acquisition;
+- analytics can be rebuilt from normalized/raw data;
+- alerts and briefs are reproducible from evidence windows.
+
+---
+
+## [ ] Segment 18 — Operability, security, deployment and retention
+
+### Build
+
+- structured metrics/tracing;
+- capability/operation/session dashboards;
+- admin/operator health endpoints;
+- operation promotion/quarantine audit UI/API where useful;
+- application Docker image(s);
+- production Compose/Kubernetes/systemd decision based on target environment;
+- non-placeholder service definitions;
+- private networking;
+- dependency/security CI;
+- migration validation;
+- secret backend integration when decided;
+- retention/archival implementation when policy is provided;
+- removal/classification of legacy binary/placeholders;
+- `.env.example` / runbooks.
+
+### User dependencies
+
+- `SECRETS-01` production secret backend;
+- `RETENTION-01` retention periods;
+- deployment environment details.
+
+Acceptance: clean deployment from repository, dependency-aware readiness, no undocumented manual state, auditable operator actions.
+
+---
+
+## [ ] Segment 19 — Scale, chaos and provider-class readiness certification
+
+### Goal
+
+Prove rather than assume scalability.
+
+### Test dimensions
+
+- multiple dispatcher processes;
+- large worker pools;
+- per-capability partitions/priorities;
+- session scarcity under high worker count;
+- retry/dead-letter storms;
+- Redis interruption/restart;
+- PostgreSQL interruption/failover environment where available;
+- literal worker process termination;
+- browser-worker isolation;
+- protocol version mass degradation;
+- raw-store backpressure;
+- sustained/soak throughput;
+- queue-age SLOs;
+- monitor gap/backfill load;
+- operation canary rollout at load;
+- resource saturation and graceful degradation.
+
+### Infrastructure decision gate
+
+Only after measurements decide whether PostgreSQL + Redis Streams remains adequate or whether a different DeliveryBus/control-plane topology is justified.
+
+### User dependency
+
+`SCALE-01`: final capacity certification requires production-like hardware/topology and target SLOs.
+
+### Acceptance
+
+A written benchmark/fault report states:
+
+- tested sustained/burst throughput;
+- latency distributions;
+- failure/recovery behavior;
+- bottlenecks;
+- safe worker/session scaling limits;
+- storage growth;
+- operational limits;
+- whether architecture meets the requested production envelope.
+
+---
+
+# 5. Capability completeness target
+
+The catalog should eventually cover the major **read/data** capabilities visible in serious X-data APIs:
+
+### Tweet/search
+
+- advanced search;
+- latest/relevance variants;
+- lookup by IDs;
+- replies;
+- quotes;
+- retweeters;
+- thread context;
+- articles/details.
+
+### User
+
+- lookup/batch lookup;
+- search;
+- timelines;
+- mentions;
+- followers/follower IDs;
+- following;
+- relationship;
+- profile/about.
+
+### Collections
+
+- lists;
+- communities.
+
+### Incremental
+
+- user monitoring;
+- query/filter monitoring;
+- cursors/checkpoints;
+- gap recovery.
+
+Mutating/account actions belong in a separately authorized **Action Plane** if ever required. They are not prerequisites for the ingestion platform.
+
+---
+
+# 6. Hard isolation requirements
+
+Every segment must preserve these invariants from `architecture.md`:
+
+1. **Control Plane does not depend on X protocol details.**
+2. **Capability contracts do not depend on adapters/endpoints.**
+3. **Protocol operations do not depend on analytics.**
+4. **Research/discovery tooling is not required for stable collection.**
+5. **Candidate operations cannot become stable without validation/canary evidence.**
+6. **Raw payload persistence allows parser/normalizer replay.**
+7. **Session health and session leasing are separate concepts.**
+8. **One capability/version failure has bounded blast radius.**
+9. **Parent-system clients do not depend on internal queue/storage implementation.**
+10. **Infrastructure is replaceable behind narrow boundaries, but only replaced after measured need.**
+
+A change that violates these rules is architectural regression even if it makes one endpoint work temporarily.
+
+---
+
+# 7. Cross-segment verification matrix
+
+As implementation progresses, continuously test these failure cases:
+
+| Failure | Must remain working |
+|---|---|
+| X search operation breaks | queue, users, graph, stored data, unrelated capabilities |
+| Twikit breaks | first-party stable operations |
+| browser observation breaks | stable protocol acquisition |
+| Redis restarts | durable task/outbox state |
+| worker dies | task recovery |
+| session dies | other sessions/capabilities |
+| parser breaks | raw acquisition persistence/reprocessing |
+| analytics breaks | ingestion + normalization |
+| candidate operation is wrong | current stable production version |
+| parent contract version changes | internal protocol/control planes |
+
+Add automated tests for these boundaries when the corresponding modules exist.
+
+---
+
+# 8. Self-healing maturity target
+
+Do not call the system self-healing until the levels below are separately demonstrated.
+
+### SH-0 — observe
+
+Health/probes/schema drift identify what broke.
+
+### SH-1 — fail over
+
+Router can automatically choose an already validated stable alternate.
+
+### SH-2 — discover candidate
+
+Research tooling can produce a candidate operation/parser definition from new observations.
+
+### SH-3 — validate/promote
+
+Candidate passes fixtures + live canary + comparison and can be promoted/rolled back with audit.
+
+### SH-4 — bounded automatic repair
+
+Only predefined safe classes of change can automatically promote after all gates.
+
+### SH-5 — assisted reverse-engineering escalation
+
+Unrepairable drift produces a complete investigation bundle for Codex/researcher.
+
+Arbitrary autonomous code rewriting/deployment is not an acceptance requirement.
+
+---
+
+# 9. Open external/user dependencies
+
+These are tracked so they are not forgotten. They do **not** block unrelated work.
+
+- `LIVE-X-01` — authorized live research sessions/network/proxy environment for final live protocol validation.
+- `SECRETS-01` — production SecretStore backend choice.
+- `PARENT-01` — larger ingestion system's final API/event integration contract.
+- `AUTH-01` — parent/gateway authentication model.
+- `SCALE-01` — production-like hardware/topology + sustained/burst throughput/SLO targets.
+- `RETENTION-01` — raw/canonical/task/dead-letter/audit retention periods.
+
+Ask the user only when a segment cannot be safely completed without one of these decisions.
+
+---
+
+# 10. Final production acceptance
+
+The overall project is not complete until all of the following are demonstrated:
+
+## Ownership / capability
+
+- primary required read capabilities run through first-party protocol implementations;
+- third-party X libraries are not a single required runtime dependency;
+- capability catalog has explicit implemented/degraded/unsupported state;
+- protocol operation/parser versions are traceable and reproducible.
+
+## Reliability
+
+- no acknowledged task loss under worker/dispatcher failure;
+- deterministic retries/dead letters/replay;
+- session concurrency/budget limits;
+- operation/version failure isolation;
+- monitor gap detection/backfill;
+- candidate promotion rollback.
+
+## Data correctness
+
+- raw acquisition evidence preserved according to retention policy;
+- canonical identity and observations remain distinct;
+- engagement/re-observation does not inflate data;
+- parsers/normalizers are versioned and replayable;
+- provenance reaches task -> acquisition plan -> operation -> raw payload -> normalized object.
+
+## Self-healing
+
+- operation health/drift monitoring works;
+- validated alternate routing works;
+- candidate/canary/promotion pipeline works;
+- failed repair quarantines safely;
+- investigation package is useful enough to hand to a researcher/Codex.
+
+## Platform quality
+
+- versioned northbound/parent contracts;
+- analytics/briefs isolated downstream;
+- reproducible build/deploy/migrations;
+- secret handling appropriate to environment;
+- metrics/tracing/runbooks;
+- load/chaos/soak report against concrete infrastructure/SLOs.
+
+---
+
+# 11. Immediate next step
+
+Do **not** resume the old Segment 4 token-leasing plan as originally written.
+
+The next runtime implementation segment is now:
+
+> **Segment 4 — Capability contracts and planner boundary.**
+
+This is deliberately first because it creates the seam that lets the Control Plane stay stable while Twikit is progressively replaced by our first-party protocol implementation.
