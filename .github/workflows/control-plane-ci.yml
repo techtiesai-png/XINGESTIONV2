@@ -1,0 +1,75 @@
+name: control-plane-ci
+
+on:
+  push:
+    branches:
+      - hardening/**
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: app_user
+          POSTGRES_PASSWORD: app_password
+          POSTGRES_DB: appdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app_user -d appdb"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      DATABASE_DSN: postgresql://app_user:app_password@127.0.0.1:5432/appdb
+      REDIS_URL: redis://127.0.0.1:6379/0
+      MOCK_MODE: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Compile Python sources
+        run: |
+          python -m compileall -q \
+            xingestion \
+            worker.py \
+            dispatcher.py \
+            scripts \
+            tests
+
+      - name: Lint hardened modules
+        run: |
+          ruff check \
+            xingestion \
+            dispatcher.py \
+            scripts/apply_migrations.py \
+            tests
+
+      - name: Apply database schema and migrations
+        run: python scripts/apply_migrations.py
+
+      - name: Run control-plane tests
+        run: pytest -q tests/test_control_plane_smoke.py tests/test_outbox_integration.py
