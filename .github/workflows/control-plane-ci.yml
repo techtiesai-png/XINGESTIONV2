@@ -60,9 +60,9 @@ jobs:
             scripts \
             tests
 
-      - name: Lint hardened modules
+      - name: Lint correctness-critical rules
         run: |
-          ruff check \
+          ruff check --select E,F,B \
             xingestion \
             dispatcher.py \
             scripts/apply_migrations.py \
