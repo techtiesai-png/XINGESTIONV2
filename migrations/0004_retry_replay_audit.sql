@@ -44,8 +44,10 @@ CREATE TABLE IF NOT EXISTS worker_dead_letter_replays (
     dead_letter_id BIGINT NOT NULL
         REFERENCES worker_dead_letters(id) ON DELETE CASCADE,
     replay_generation INT NOT NULL CHECK (replay_generation > 0),
-    replay_task_id INT NOT NULL
-        REFERENCES worker_tasks(id) ON DELETE RESTRICT,
+    -- Historical identifier is intentionally not a restrictive FK. The
+    -- current cleanup daemon still deletes DONE tasks; retaining the numeric
+    -- ID preserves audit lineage without making cleanup transactions fail.
+    replay_task_id INT NOT NULL,
     requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     selector_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     UNIQUE (dead_letter_id, replay_generation),
