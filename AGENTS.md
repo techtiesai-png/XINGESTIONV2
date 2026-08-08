@@ -6,6 +6,10 @@ This file is the standing operating contract for work on this repository.
 
 XINGESTIONV2 is an independently developed research subsystem for a government-related research context. It is being developed separately now and is expected to be integrated later into a substantially larger system. Engineering decisions should therefore favor clear interfaces, reproducibility, auditability, security, recoverability, and production-grade behavior rather than demo-only shortcuts.
 
+The subsystem must remain adaptable, malleable, and horizontally scalable. Its architectural ambition should be comparable to the service characteristics of large third-party X/Twitter data providers such as TwitterAPI.io: high-throughput collection, multiple independently scalable workers, resilient delivery, replaceable collection backends, pagination/checkpointing, stable external contracts, and operational isolation. Do not claim knowledge of a third party's private internal architecture; use public capabilities and scale characteristics only as an engineering benchmark.
+
+At the same time, XINGESTIONV2 must remain a cleanly bounded subsystem that can later be merged into a substantially larger ingestion platform. Avoid decisions that make it inseparable from its current repository, queue implementation, collector library, deployment topology, or database layout.
+
 ## Required companion documents
 
 Before changing the repository, read these files together:
@@ -62,6 +66,10 @@ Mock mode is for testing. It must not become the only path that works.
 - Separate immutable/raw observations, canonical entities, engagement snapshots, analytical rollups, and generated intelligence when their semantics differ.
 - Preserve provenance: source, query/task, collection time, platform object identifier, collector version, and relevant run identifiers should be recoverable.
 - Design integration boundaries so this subsystem can later be embedded into a larger platform without rewriting core business logic.
+- Prefer stateless or externally coordinated workers so capacity can be increased horizontally rather than by making a single process increasingly complex.
+- Treat queue technology, collector implementation, persistence implementation, analytics consumers, and parent-system integration as replaceable boundaries rather than permanent assumptions.
+- External contracts should be versioned so a parent ingestion platform can consume or submit work without knowing XINGESTIONV2's internal queue or collector implementation.
+- Scale assumptions must be validated with measured load and fault tests. Do not infer production capacity merely from asynchronous code or worker counts.
 
 ### Secrets and identities
 
@@ -106,6 +114,33 @@ Logs should be structured and include safe correlation identifiers such as task 
 - Empty service definitions, placeholder deployment files, and invalid health checks are incomplete work, not production scaffolding.
 - Database migrations must be versioned and repeatable.
 - CI should run formatting/linting, type/static checks where useful, tests, migration validation, and dependency/security checks.
+
+## Segmented implementation cadence
+
+Do not attempt the entire roadmap or a broad collection of unrelated fixes in one uninterrupted implementation run.
+
+Work should be divided into **small coherent segments**. A segment should normally have one primary engineering objective and a bounded set of directly related files, state transitions, tests, and documentation. The user prefers work packages roughly comparable to a short focused implementation pass rather than long continuous runs. Treat this as a scope constraint, not as permission to reduce reasoning depth.
+
+For each segment:
+
+1. Identify the exact `plan.md` item or tightly coupled sub-items being addressed.
+2. Re-read the relevant implementation and any interfaces it depends on.
+3. Research or verify current external/library behavior when that behavior is unstable, version-sensitive, or material to the design.
+4. Cross-reference the change against architecture, data semantics, failure behavior, scaling, security, and later parent-system integration.
+5. Implement a coherent production-quality slice. Do not cut through an invariant merely to keep the segment artificially small.
+6. Perform the strongest verification available for that slice.
+7. Update `plan.md` and `implemented.md` accurately.
+8. Stop and report the segment before beginning the next segment unless the user explicitly asks to continue multiple segments in one run.
+
+The report after each segment should state, concisely:
+
+- what was implemented,
+- important design decisions,
+- what was actually tested/verified,
+- what remains uncertain or blocked,
+- what the next recommended segment is.
+
+Segmenting work must **not** mean weaker reasoning, less cross-referencing, less research, reduced error handling, skipped tests, temporary architecture that will obviously be thrown away, or superficial patches. If a correctness boundary requires a somewhat larger change, complete that boundary and explain why the segment expanded.
 
 ## Implementation workflow
 
