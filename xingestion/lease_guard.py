@@ -46,6 +46,29 @@ class TaskLeaseGuard:
         self.lease_seconds = lease_seconds
         self.heartbeat_seconds = heartbeat_seconds
 
+    async def _touch_pending(
+        self,
+        *,
+        message_id: str,
+        consumer_name: str,
+    ) -> bool:
+        """Reset Redis pending-entry idle time while preserving this consumer."""
+
+        claimed = await self.queue.redis.xclaim(
+            name=self.queue.stream_name,
+            groupname=self.queue.group_name,
+            consumername=consumer_name,
+            min_idle_time=0,
+            message_ids=[message_id],
+            idle=0,
+            justid=True,
+        )
+        claimed_ids = {
+            item.decode("utf-8") if isinstance(item, bytes) else str(item)
+            for item in (claimed or [])
+        }
+        return message_id in claimed_ids
+
     async def renew_once(
         self,
         *,
@@ -80,7 +103,7 @@ class TaskLeaseGuard:
             )
 
         try:
-            touched = await self.queue.touch_pending(
+            touched = await self._touch_pending(
                 message_id=delivery.message_id,
                 consumer_name=consumer_name,
             )
