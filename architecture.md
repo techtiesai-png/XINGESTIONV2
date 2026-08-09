@@ -1,1094 +1,704 @@
 # XINGESTIONV2 Target Architecture
 
-> Status: architecture decision document. This describes the intended system after the 2026-08-08 redesign. Existing code is migrated toward this architecture segment-by-segment; the document must not be read as a claim that every component already exists.
+> Status: authoritative whole-system architecture. Existing code is migrated toward this design segment-by-segment; this document is not a claim that every target component already exists.
 
-Read together with [`AGENTS.md`](./AGENTS.md), [`plan.md`](./plan.md), and [`implemented.md`](./implemented.md).
+Read together with:
 
----
+- `AGENTS.md` — durable project rules and ownership;
+- `protocol-integration.md` — authoritative XINGESTIONV2 ↔ X-rev-os protocol/runtime boundary;
+- `plan.md` — implementation order/status;
+- `implemented.md` — factual verification/update ledger.
 
-## 1. Mission
-
-Build an independently owned, production-grade X/Twitter data-ingestion subsystem that:
-
-1. exposes stable **data capabilities** such as tweet search, tweet lookup, replies, timelines, followers, lists, communities, and monitoring;
-2. owns the primary implementation used to communicate with observable X web/API protocols rather than depending on one third-party scraping library at runtime;
-3. can use open-source libraries and provider documentation as **research inputs and compatibility references**, not as the single source of protocol knowledge;
-4. detects protocol drift, validates alternate operation versions, fails over to already validated alternatives, and eventually supports carefully bounded self-healing;
-5. preserves raw evidence and provenance so parsers/normalizers can be repaired and replayed without recollecting everything;
-6. scales horizontally and fails in isolated domains rather than turning one broken X operation into a system-wide outage;
-7. remains cleanly embeddable into a larger ingestion platform later.
-
-The architectural benchmark is the *service shape* of serious web-data and X-data platforms: broad capability coverage, stable customer-facing contracts, queues, sessions, pagination/checkpointing, independent workers, monitoring, recoverability, and versioned extraction behavior. Public provider documentation is a capability benchmark only; we do not claim knowledge of any provider's private backend design.
+Detailed X protocol research/runtime architecture lives in `techtiesai-png/X-rev-os` and must not be duplicated here.
 
 ---
 
-## 2. The central design change
+# 1. Mission
 
-The original prototype effectively behaved like:
+Build a production-grade X/Twitter ingestion subsystem that:
+
+1. exposes stable protocol-neutral data capabilities such as search, tweet lookup, replies, timelines, followers, lists, communities and monitoring;
+2. has a durable, recoverable and horizontally scalable control plane;
+3. uses first-party X-specific protocol behavior owned by the dedicated X-rev-os runtime rather than treating Twikit/twscrape as protocol authorities;
+4. persists raw evidence before downstream canonical/analytics processing can destroy recoverability;
+5. separates production session/network allocation from X-specific request construction;
+6. keeps acquisition alive when downstream analytics/briefing fails;
+7. feeds production protocol health evidence back to X-rev-os without making research tooling a production dependency;
+8. can integrate later into a substantially larger parent/NOS ingestion system through versioned contracts;
+9. measures and proves scale rather than selecting enterprise-looking infrastructure by default.
+
+The system should use serious public X/web-data platforms only as capability/service-shape benchmarks. Do not infer their private architecture.
+
+---
+
+# 2. Repository topology
+
+The project ecosystem intentionally has two repositories with one explicit boundary.
 
 ```text
-XINGESTIONV2
-    |
-    v
-Twikit
-    |
-    v
-X internal/unofficial web API
+┌──────────────────────────────────────────────────────────────┐
+│                     techtiesai-png/X-rev-os                 │
+│                                                              │
+│ protocol observation / reverse engineering / evidence        │
+│ X request construction / parsers / pagination / transaction │
+│ acquisition recipes / validation / protocol release bundle  │
+└──────────────────────────────┬───────────────────────────────┘
+                               │
+                     pinned ProtocolReleaseManifest
+                               │
+                               v
+┌──────────────────────────────────────────────────────────────┐
+│                    XINGESTIONV2                              │
+│                                                              │
+│ CapabilitySpec / task ledger / queue / workers              │
+│ session & network pools / production retries                │
+│ raw production evidence / canonical data                    │
+│ monitoring / analytics / APIs / parent integration          │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-That makes Twikit both an implementation dependency and a large part of the protocol knowledge base.
+XINGESTIONV2 remains the **core entire ingestion repository and integration anchor**. The fact that protocol research/runtime is separated does not fragment the system contract: `protocol-integration.md`, pinned release manifests and synchronized documentation keep the repositories bonded.
 
-The target is:
+---
 
-```text
-                         STABLE CAPABILITY CONTRACT
-                                  |
-                                  v
-                        Capability Planner / Router
-                                  |
-                     +------------+-------------+
-                     |                          |
-                     v                          v
-            First-party X Protocol       Browser Observation
-                 Adapter                   / Recovery Adapter
-                     |                          |
-                     +------------+-------------+
-                                  |
-                                  v
-                                 X
-```
-
-Reference projects such as Twikit/twscrape move outside the primary runtime path:
+# 3. Core architecture
 
 ```text
-Twikit / twscrape / other research code
-provider capability documentation
-browser/network observations
-historical fixtures
+ Parent/NOS / local clients
+             |
+             v
++-------------------------------------------------------------+
+| 1. CAPABILITY / NORTHBOUND CONTRACT                         |
+| SEARCH_TWEETS | TWEET_REPLIES | USER_TIMELINE | ...        |
+| typed inputs/outputs | fidelity | freshness | pagination    |
++-----------------------------+-------------------------------+
+                              |
+                              v
++-------------------------------------------------------------+
+| 2. DURABLE CONTROL + SCHEDULING                             |
+| PostgreSQL tasks -> outbox -> Redis delivery -> workers     |
+| idempotency | lease/fence | retry | DLQ/replay | priority   |
+| monitors | backfill scheduling | coalescing | backpressure  |
++-----------------------------+-------------------------------+
+                              |
+                              v
++-------------------------------------------------------------+
+| 3. PRODUCTION ACQUISITION COORDINATION                      |
+| CapabilityPlanner                                           |
+| Session/Identity Manager                                    |
+| Network/Proxy allocation                                    |
+| approved X-rev release/recipe routing                       |
++-----------------------------+-------------------------------+
+                              |
+                              v
++-------------------------------------------------------------+
+| 4. PINNED X-REV PROTOCOL RUNTIME                            |
+| ProtocolRequest + SessionContext + transport + RawSink      |
+| X request construction | parser | pagination | typed errors |
+| exact runtime/bundle/recipe provenance                      |
++-----------------------------+-------------------------------+
+                              |
+                              v
+                            X
+                              |
+                              v
++-------------------------------------------------------------+
+| 5. PRODUCTION RAW EVIDENCE PLANE                            |
+| immutable raw body/object ref | request provenance          |
+| task/run/session-safe refs | X-rev recipe/runtime versions  |
++-----------------------------+-------------------------------+
+                              |
+                              v
++-------------------------------------------------------------+
+| 6. PRODUCTION NORMALIZATION / ENTITY DATA PLANE             |
+| canonical tweets/users/lists/communities                    |
+| relationship edges | observations | time semantics          |
+| idempotent reprocessing                                     |
++-----------------------------+-------------------------------+
+                              |
+              +---------------+---------------+
+              |                               |
+              v                               v
+      analytics/alerts/briefs           APIs / parent exports
+
+Production telemetry from stages 3–6
               |
               v
-      RESEARCH / INTELLIGENCE TOOLS
-              |
-              v
-     our versioned protocol registry
++-------------------------------------------------------------+
+| 7. PROTOCOL HEALTH FEEDBACK                                 |
+| capability/release/recipe/session-cohort evidence           |
+| investigation package / degradation signal                 |
++-----------------------------+-------------------------------+
+                              |
+                              v
+                      X-rev-os research loop
 ```
 
-The primary production path should ultimately be ours.
+These are logical boundaries. Do not split them into microservices unless there is a real scaling/failure-isolation/ownership reason.
 
 ---
 
-## 3. Do not design around provider endpoint names
+# 4. Capability contract
 
-A public provider endpoint is a product contract, not proof of a one-to-one X endpoint underneath it.
+The canonical `CapabilitySpec` belongs to XINGESTIONV2 because it is the stable product/parent-system contract.
 
-For example, a provider can expose `GET_FOLLOWERS`, while internally that capability might require:
-
-- one or more X operations;
-- cursor traversal;
-- cached user objects;
-- normalization;
-- deduplication;
-- retries and session selection;
-- multiple protocol versions.
-
-Therefore the canonical specification is a **capability catalog**, not a copied list of third-party URLs.
+A capability describes **what data behavior is required**, never the underlying X endpoint.
 
 Example:
 
 ```text
-Capability: USER_FOLLOWERS
-Input:
-  user_id
-  cursor?
-  page_size?
-
-Output:
-  users[]
-  next_cursor?
-  has_more
-  provenance
-
-Acquisition plan v12:
-  protocol operation UserFollowers/v4
-  auth class AUTHENTICATED_WEB
-  parser UserTimelineParser/v7
+CapabilitySpec: SEARCH_TWEETS
+contract_version: 1
+inputs:
+    query
+    product
+    cursor?
+    page_size?
+required fidelity:
+    real tweet IDs
+    text/author fields required by contract
+pagination semantics:
+    opaque continuation token
+provenance requirements:
+    raw evidence ref + acquisition release/recipe
 ```
 
-The provider-style API can later map onto this stable capability layer without leaking X protocol details.
+Hard rule: capability contracts contain no:
+
+- X query/document IDs;
+- feature bundles;
+- Twikit/twscrape types;
+- browser selectors;
+- X-specific request headers;
+- provider-specific public URL names.
+
+X-rev-os publishes `ProtocolCapabilityBinding`s linking a compatible capability-contract version to validated acquisition recipe revisions.
 
 ---
 
-## 4. Architecture overview
+# 5. Durable Control Plane
 
-```text
-                               +----------------------+
-                               | Parent ingestion     |
-                               | system / local API   |
-                               +----------+-----------+
-                                          |
-                                 versioned CapabilityRequest
-                                          |
-                                          v
-+--------------------------------------------------------------------------------+
-|                           NORTHBOUND CAPABILITY LAYER                           |
-| search_tweets | tweet_by_id | replies | user_timeline | followers | monitors...|
-+-----------------------------------------+--------------------------------------+
-                                          |
-                                          v
-+--------------------------------------------------------------------------------+
-|                            DURABLE CONTROL PLANE                               |
-| PostgreSQL task ledger -> transactional outbox -> delivery bus -> workers      |
-| leases | heartbeat | retries | dead letters | replay | priorities | schedules  |
-+-----------------------------------------+--------------------------------------+
-                                          |
-                                          v
-+--------------------------------------------------------------------------------+
-|                         CAPABILITY PLANNER / ROUTER                            |
-| required capability + fidelity + freshness + auth class                       |
-|          -> choose validated AcquisitionPlan / OperationVersion                |
-+------------------+----------------------+-------------------+-------------------+
-                   |                      |                   |
-                   v                      v                   v
-        +--------------------+  +--------------------+  +------------------------+
-        | First-party X      |  | Browser observation|  | Transitional/reference |
-        | protocol adapter   |  | / recovery adapter |  | adapters (non-primary) |
-        +---------+----------+  +---------+----------+  +------------+-----------+
-                  |                       |                          |
-                  +-----------------------+--------------------------+
-                                          |
-                                          v
-                                          X
-                                          |
-                                          v
-+--------------------------------------------------------------------------------+
-|                              RAW DATA PLANE                                    |
-| immutable response/capture envelope | request provenance | schema fingerprint  |
-+-----------------------------------------+--------------------------------------+
-                                          |
-                                          v
-+--------------------------------------------------------------------------------+
-|                        NORMALIZATION / ENTITY DATA PLANE                       |
-| canonical tweets/users/lists/communities | relationship edges | observations   |
-| parser version | first/last seen | engagement snapshots | source timestamps    |
-+---------------------------+-----------------------------+-----------------------+
-                            |                             |
-                            v                             v
-                    downstream analytics          parent-system export
-                    alerts / briefs / API          events / query API
-
-                +--------------------------------------------------+
-                |             PROTOCOL INTELLIGENCE                |
-                | probes | drift detector | capture analyzer       |
-                | schema diff | candidate registry | canaries      |
-                | promotion/rollback | investigation packages      |
-                +--------------------------+-----------------------+
-                                           |
-                                           v
-                                  Operation Registry
-```
-
----
-
-# 5. Hard module boundaries
-
-These boundaries are architectural invariants. They exist specifically so one broken part does not force rewrites elsewhere.
-
-## 5.1 Capability contract
-
-The northbound contract describes **what data is wanted**, never which X endpoint/library should be used.
-
-Examples:
-
-- `SEARCH_TWEETS`
-- `TWEETS_BY_IDS`
-- `TWEET_REPLIES`
-- `TWEET_QUOTES`
-- `TWEET_RETWEETERS`
-- `THREAD_CONTEXT`
-- `USER_BY_ID`
-- `USER_BY_HANDLE`
-- `USER_TIMELINE`
-- `USER_MENTIONS`
-- `USER_FOLLOWERS`
-- `USER_FOLLOWER_IDS`
-- `USER_FOLLOWING`
-- `FOLLOW_RELATIONSHIP`
-- `LIST_TIMELINE`
-- `LIST_MEMBERS`
-- `LIST_FOLLOWERS`
-- `COMMUNITY_INFO`
-- `COMMUNITY_TIMELINE`
-- `MONITOR_USER_TWEETS`
-- `MONITOR_QUERY`
-
-Each capability has a versioned typed input, canonical output type, pagination semantics, required fidelity, and provenance requirements.
-
-**Rule:** no X query IDs, feature flags, Twikit types, Playwright selectors, or provider-specific URLs are allowed in the capability contract.
-
----
-
-## 5.2 Durable control plane
-
-This is the work completed substantially in Segments 1-3.
+Segments 1–3 implemented the substantial foundation.
 
 Responsibilities:
 
-- task identity/idempotency;
+- logical task identity/idempotency;
 - task state transitions;
 - schedules/priorities;
-- outbox delivery;
+- transactional outbox;
 - delivery acknowledgement;
-- task leases/heartbeats;
-- retry/backoff;
+- task execution leases/fencing/heartbeats;
+- durable retry/backoff;
 - dead-letter archive/replay;
-- crash recovery.
+- crash recovery;
+- future monitor/backfill scheduling/backpressure.
 
-It should eventually consume generic `CapabilityRequest` payloads.
+PostgreSQL remains the execution authority unless measured evidence justifies migration.
 
-**Rule:** the control plane does not import X protocol code and does not know whether a capability is implemented through HTTP, GraphQL, browser capture, or another source.
+Redis Streams is delivery infrastructure, not the business/state authority.
 
-If the X search operation breaks tomorrow, task creation/retry/replay still works.
+Queue/task code must not import X operation/query/parser code.
+
+### Production retry authority
+
+XINGESTIONV2 exclusively owns production retry policy.
+
+The X-rev runtime performs zero hidden production retries and returns typed retry guidance only.
+
+This prevents retry multiplication and keeps attempt history durable/auditable.
+
+### Remaining hardening before scale claims
+
+The current verified foundation should be strengthened as measured/needed with:
+
+- unique lease token/epoch fencing to eliminate same-worker-ID ABA ambiguity;
+- Redis dataset-loss/redrive/reconciliation;
+- stream trimming/retention;
+- migration-history hardening;
+- high-scale/chaos/soak tests.
+
+These do not require discarding Segments 1–3.
 
 ---
 
-## 5.3 Capability planner / router
+# 6. Capability Planner / approved route selection
 
-The planner converts a capability request into a versioned **AcquisitionPlan**.
+The planner receives a canonical `CapabilityRequest` and selects an **approved compatible acquisition route**, not an arbitrary X endpoint.
+
+Inputs may include:
+
+```text
+capability ID/version
+fidelity
+freshness
+priority/traffic class
+session/auth availability
+network availability
+approved X-rev release catalog
+recipe health/compatibility
+```
+
+Output conceptually:
+
+```text
+AcquisitionPlan
+    capability_request
+    protocol_release_manifest
+    acquisition_recipe_revision
+    required auth class
+    page/checkpoint policy
+    production traffic class
+```
+
+The planner must not inspect cookies/passwords or contain query IDs.
+
+A routing change among already approved compatible releases must not require queue schema rewrites.
+
+---
+
+# 7. Production Session / Identity / Network Plane
+
+Session state is independent from the task queue and independent from X protocol definitions.
+
+Model at least:
+
+```text
+Account
+CredentialRef
+SessionArtifact
+SessionHealth
+SessionLease
+NetworkContext / NetworkRoute
+Budget/Cooldown observations
+```
+
+A session lease is not the same thing as session health.
+
+Responsibilities:
+
+- max concurrency;
+- lease fencing/reclaim;
+- cooldown/revocation/refresh-required state;
+- safe secret references;
+- session affinity where validated protocol chains require it;
+- selection of production network/proxy/region;
+- operation/capability budget observations;
+- supplying ephemeral `SessionContext` to X-rev without exposing long-lived credentials.
+
+X-rev owns X-specific attachment semantics (which cookies/header values are derived/attached). XINGESTION owns which production session/network route is used.
+
+Losing one session should not disable a capability when equivalent approved sessions remain.
+
+---
+
+# 8. X-rev protocol runtime boundary
+
+Detailed protocol design lives in `techtiesai-png/X-rev-os`.
+
+The production-facing contract is defined in `protocol-integration.md` and X-rev `architecture.md`.
+
+Conceptually:
+
+```text
+ProtocolRequest
+SessionContext
+NetworkContext / HttpTransport
+RawEvidenceSink
+ProtocolReleaseManifest
+        |
+        v
+X-rev runtime
+        |
+        +--> AcquisitionResult
+        +--> typed ProtocolError
+```
+
+X-rev owns:
+
+- request/operation construction;
+- parser implementations;
+- pagination interpretation;
+- transaction/client-request metadata;
+- auth/session attachment semantics;
+- protocol-specific error classification;
+- exact recipe dependency composition.
+
+XINGESTION must not duplicate this behavior after migration.
+
+### Release pinning
+
+Version independently:
+
+```text
+xrev-runtime
+protocol-bundle
+capability-contract
+```
+
+A `ProtocolReleaseManifest` binds the exact tested versions/checksums/validated recipes.
+
+Production uses an exact approved manifest, never research `latest`.
+
+---
+
+# 9. Production Raw Evidence Plane
+
+Raw evidence is a durability boundary, not merely debug logging.
+
+XINGESTIONV2 supplies the runtime's `RawEvidenceSink`.
+
+Every relevant protocol response should become a durable production raw reference before parser success is treated as safe acquisition success.
+
+Recommended physical architecture:
+
+```text
+object storage / content-addressed compressed blobs
+        +
+PostgreSQL metadata/provenance index
+```
+
+rather than storing all large raw bodies directly in PostgreSQL.
+
+Metadata should include enough safe provenance to reprocess/investigate:
+
+```text
+raw_capture_id / object hash/ref
+execution attempt/task
+capability
+X-rev runtime/bundle/recipe
+operation/parser/pagination revisions
+safe session/network pseudonymous refs
+captured_at
+HTTP status
+schema fingerprint
+cursor/page context
+```
+
+Never persist secret cookie/auth values as ordinary request provenance.
+
+If raw storage is a required invariant and the sink is unavailable, acquisition should backpressure/fail rather than silently bypass evidence.
+
+---
+
+# 10. Production Normalization / Entity Data Plane
+
+X-rev returns protocol-normalized capability records; XINGESTIONV2 owns the larger canonical production data model.
+
+Separate:
+
+```text
+raw acquisition evidence
+protocol-normalized page/records
+canonical entities
+relationship edges
+observations over time
+derived analytics
+```
+
+### Identity
+
+Platform object IDs are primary identity when available. Never merge distinct X objects merely because their text hashes match.
+
+### Observation semantics
+
+Engagement/profile counts are observations over time, not additive events.
+
+### Time semantics
+
+Keep distinct:
+
+```text
+source_created_at
+captured_at
+first_seen_at
+last_seen_at
+source_updated_at where observable
+normalized_at
+```
+
+### Reprocessing
+
+A parser/normalizer/data-model bug must be repairable from retained evidence without recollecting where retention permits.
+
+Production normalization should be asynchronous/idempotent relative to acquisition so analytics/model bugs do not cause repeated X calls.
+
+---
+
+# 11. Monitoring / scheduler architecture
+
+Provider-like monitoring must not be implemented as naive thousands of independent scrape timers.
+
+Model persistent subscriptions:
+
+```text
+subscription_id
+canonical target/query
+cadence/freshness objective
+priority
+watermark/checkpoint
+next_due_at
+max catch-up window
+consumer/fanout targets
+```
+
+Scheduler responsibilities:
+
+- coalesce identical due acquisitions where safe;
+- maintain cursor/watermark state;
+- deduplicate incremental results;
+- detect gaps;
+- schedule bounded backfills;
+- jitter catch-up after outages;
+- enforce priority/traffic classes;
+- protect sessions from thundering herds;
+- expose monitor lag.
 
 Example:
 
 ```text
-CapabilityRequest:
-  SEARCH_TWEETS(query="india", sort="latest")
-
-Planner result:
-  plan_id: search-latest/web-v17
-  adapter: X_INTERNAL_WEB
-  operation_version: SearchTimeline/v17
-  parser_version: TweetTimeline/v9
-  auth_class: AUTHENTICATED_WEB
-  page_limit: 20
+100 downstream subscribers monitoring the same public user
+            |
+            v
+1 due acquisition where semantics/session visibility permit
+            |
+            v
+100 downstream fanout deliveries
 ```
 
-Selection can consider:
-
-- capability coverage;
-- operation health;
-- required authentication class;
-- response fidelity;
-- freshness;
-- current session/budget availability;
-- whether a candidate is stable/canary/quarantined;
-- future cost/latency policies.
-
-**Rule:** routing changes must not require queue/schema rewrites.
+Cache/coalescing keys must include auth/visibility/fidelity/freshness dimensions where results can differ.
 
 ---
 
-## 5.4 What an adapter means here
+# 12. Protocol health and research feedback
 
-Use the adapter pattern only at true external/transport boundaries.
+XINGESTIONV2 owns **production telemetry**; X-rev-os owns **deep protocol diagnosis and candidate validation**.
 
-An `AcquisitionAdapter` receives an already planned capability operation and returns a standardized raw envelope.
-
-Conceptually:
-
-```python
-class AcquisitionAdapter(Protocol):
-    async def execute(
-        self,
-        plan: AcquisitionPlan,
-        request: CapabilityRequest,
-        session: SessionLease | None,
-    ) -> RawAcquisitionEnvelope:
-        ...
-```
-
-Target runtime adapters:
-
-### `XInternalWebAdapter` — primary
-
-Our first-party implementation of known X web/internal protocol operations.
-
-Owns:
-
-- supported transport/request construction;
-- operation registry lookup;
-- headers/cookies/session attachment;
-- pagination/cursor extraction;
-- raw response capture;
-- protocol-specific error mapping.
-
-### `BrowserObservationAdapter` — diagnostic/recovery
-
-Browser-based path used for:
-
-- observing how the X client obtains data;
-- capturing authorized network responses;
-- validating candidate operation behavior;
-- selected recovery cases where browser fidelity is required.
-
-It is not the default high-throughput collector because browser execution is substantially more expensive to scale than direct protocol requests.
-
-### `LegacyLibraryAdapter` — transitional only
-
-Twikit or another library may remain temporarily as:
-
-- regression oracle;
-- migration comparison path;
-- fixture source;
-- optional emergency fallback while first-party capabilities are being implemented.
-
-It should not be the final protocol authority.
-
-**Important:** do not create dozens of meaningless adapters. Queueing, normalization, analytics, health scoring, and retry logic are modules with their own contracts, not "adapters" simply for architectural style.
-
----
-
-## 5.5 First-party protocol core
-
-This is the most important new subsystem.
-
-It should represent X protocol knowledge as versioned data + tested code rather than scattered literals.
-
-### OperationDefinition
-
-A versioned operation definition should be able to represent, where applicable:
-
-```text
-operation_key
-capability
-version
-transport
-method
-path / operation identifier
-variable schema
-feature/config schema
-auth class
-required session state
-pagination model
-parser version
-expected response invariants
-known response schema fingerprint(s)
-introduced_at
-last_validated_at
-status
-```
-
-Statuses:
-
-```text
-CANDIDATE
-CANARY
-STABLE
-DEGRADED
-QUARANTINED
-RETIRED
-```
-
-Operation definitions should be immutable after promotion. A changed protocol contract becomes a new version.
-
-### Protocol client
-
-The transport layer handles reusable mechanics only:
-
-- HTTP client lifecycle;
-- request timeout;
-- connection pooling;
-- session/cookie attachment;
-- safe request/response metadata capture;
-- protocol error classification;
-- correlation IDs;
-- redaction.
-
-Capability-specific response parsing stays outside the generic transport client.
-
----
-
-## 5.6 Session and budget manager
-
-Account/session state is independent of protocol operation definitions and independent of the task queue.
-
-Responsibilities:
-
-- session identity/metadata;
-- active leases;
-- `max_concurrency`;
-- per-operation/per-capability usage budgets;
-- known cooldown windows;
-- last success/failure;
-- refresh-required state;
-- revocation/quarantine state;
-- session cookies/tokens via secret references;
-- session affinity where an operation chain requires it.
-
-Suggested health states:
-
-```text
-HEALTHY
-COOLDOWN
-REFRESH_REQUIRED
-DEGRADED
-QUARANTINED
-REVOKED
-```
-
-A lease is *not* a health state.
-
-**Rule:** losing one session must not break the capability if other valid sessions/plans exist.
-
----
-
-# 6. Protocol intelligence and self-healing
-
-Self-healing should be staged. Do not begin with arbitrary autonomous code modification.
-
-## Level 0 — observability
-
-For every stable operation track:
-
-- success/failure rate;
-- latency;
-- error class/status;
-- parser failures;
-- pagination anomalies;
-- schema fingerprints;
-- missing required fields;
-- session-specific vs global failure distribution;
-- first-failure and last-success times.
-
-Output:
-
-```text
-SEARCH_TWEETS          HEALTHY
-USER_TIMELINE          HEALTHY
-TWEET_REPLIES/v6       DEGRADED
-FOLLOWER_IDS/v3        BROKEN
-```
-
-This level is mandatory before any automatic repair.
-
----
-
-## Level 1 — route around known failures
-
-If two previously validated stable operation versions/plans exist and one degrades:
-
-```text
-stable A fails health threshold
-        |
-        v
-router selects stable B
-        |
-        v
-A becomes DEGRADED / investigation starts
-```
-
-No new endpoint is invented automatically.
-
-This is the safest form of self-healing.
-
----
-
-## Level 2 — declarative candidate discovery
-
-Research tooling can observe changes from authorized browser/network captures or maintained client artifacts and produce a **candidate operation definition**.
-
-Candidate discovery should capture enough evidence to answer:
-
-- what operation changed;
-- which request fields changed;
-- which response shape changed;
-- which capability it appears to satisfy;
-- whether pagination still works;
-- which auth class is required;
-- which old fixtures are no longer compatible.
-
-The candidate is not automatically production-stable.
-
----
-
-## Level 3 — validation, canary, promotion
-
-Candidate pipeline:
-
-```text
-DISCOVER
-   |
-   v
-STATIC / SCHEMA VALIDATION
-   |
-   v
-FIXTURE / CONTRACT TESTS
-   |
-   v
-LIVE GATED CANARY
-   |
-   v
-COMPARE WITH STABLE / EXPECTED INVARIANTS
-   |
-   +--> fail -> QUARANTINE + investigation package
-   |
-   v
-PROMOTE -> STABLE
-```
-
-Promotion and rollback are audited operations.
-
----
-
-## Level 4 — bounded automatic repair
-
-Only narrow, explainable repairs should be eligible for automatic promotion, for example:
-
-- a known response field moved to a validated alternate location;
-- an operation identifier changed while variables/results satisfy the same validated contract;
-- an already-known alternate parser version becomes the correct parser;
-- a stable alternate operation is promoted after canary success.
-
-Do **not** allow an LLM/agent to arbitrarily rewrite live protocol code and deploy it without tests/canary/rollback.
-
----
-
-## Level 5 — investigation escalation
-
-When safe automatic repair is impossible, create a machine-readable investigation package for a researcher/Codex.
-
-Example contents:
+Production should measure by:
 
 ```text
 capability
-broken operation/version
-last known good time
-first known bad time
-failure distribution
-old sanitized request metadata
-new sanitized observation metadata
-schema fingerprint diff
-parser failure path
-old/new fixtures
-candidate operations discovered
-session-independent evidence
-recommended files/tests to inspect
+X-rev release/recipe
+operation/parser/pagination provenance
+session/account cohort
+network/region class
+error code/scope hint
+schema fingerprint
+latency/yield
 ```
 
-This turns reverse engineering into a bounded engineering workflow rather than an emergency manual hunt.
-
----
-
-# 7. Protocol research lab
-
-Research/inspection tooling must be isolated from the production acquisition path.
-
-Inputs can include:
-
-- our own successful/failed protocol observations;
-- browser network capture from authorized research sessions;
-- public client artifacts where appropriate;
-- current open-source X libraries;
-- historical fixtures;
-- public provider capability documentation.
-
-Outputs:
-
-- candidate operation definitions;
-- capability mappings;
-- sanitized fixtures;
-- schema fingerprints;
-- parser hypotheses;
-- compatibility reports.
-
-### Why isolate it?
-
-If a research parser crashes, production collection should continue using the current stable registry.
-
-If Twikit breaks, the research comparison loses one signal; production first-party protocol operations should continue.
-
-If browser capture breaks, automatic discovery pauses; stable protocol operations should continue.
-
-### Licensing/provenance rule
-
-Reference implementations are not automatically copied verbatim. Record source/version/license and distinguish:
-
-- observed protocol facts;
-- independently implemented behavior;
-- reusable code whose license permits incorporation.
-
----
-
-# 8. Raw acquisition envelope
-
-Every acquisition path returns the same top-level envelope before normalization.
-
-Conceptually:
+A production degradation can produce:
 
 ```text
-RawAcquisitionEnvelope
-  request_id
-  task_id
-  capability
-  acquisition_plan_id
-  adapter
-  operation_key
-  operation_version
-  parser_hint
-  session_db_id (safe reference only)
-  captured_at
-  source_status
-  cursor_in
-  cursor_out
-  sanitized_request_fingerprint
-  response_schema_fingerprint
-  raw_payload_ref / raw_payload_hash
-  fidelity
-  warnings[]
+last known success
+first known failure
+failure distributions
+session/network cohort evidence
+raw evidence refs
+schema fingerprints
+parser/pagination warnings
+pinned release/recipe
 ```
 
-Raw payloads should be immutable and content-addressable where practical.
+for an X-rev investigation package.
 
-Large raw payloads should eventually live in object/blob storage rather than expanding the control-plane database indefinitely.
+### One-session evidence rule
 
-**Critical property:** a parser bug must not force recollection if the raw payload is still available.
+Do not label a failure conclusively `session-local` vs `global` when evidence only comes from one context. Preserve unknown scope.
 
----
+### Release lifecycle
 
-# 9. Normalized data plane
+X-rev validates exact recipe compositions and produces approved releases.
 
-The normalized model must be capability-neutral enough to integrate into a larger system while preserving X-specific fields where necessary.
+XINGESTIONV2 controls production rollout/rollback among approved compatible releases.
 
-Core categories:
-
-### Entities
-
-- Tweet/Post
-- User/Profile
-- List
-- Community
-- Article/media references
-
-### Relationships / edges
-
-- user follows user;
-- tweet replies to tweet;
-- tweet quotes tweet;
-- user retweeted tweet;
-- user belongs to list/community;
-- mention relationships.
-
-### Observations
-
-- engagement counters;
-- profile counters;
-- availability/deletion observations;
-- membership/follow observations where temporally meaningful.
-
-### Provenance
-
-Every canonical or observation record should be traceable to:
-
-- capability request;
-- task/run;
-- acquisition plan;
-- protocol operation/version;
-- parser/normalizer version;
-- capture time;
-- raw payload reference/hash.
-
-This is necessary for trustworthy reprocessing and drift investigations.
+Future automatic failover is limited to already approved compatible alternatives. New protocol discovery stays out of the production worker path.
 
 ---
 
-# 10. Downstream analytics are not part of acquisition correctness
+# 13. Analytics / alerts / briefs
 
-Current analytics/alerts/brief logic must eventually be decoupled from the collection worker.
+These are downstream consumers.
 
-Target:
+Acquisition does not invoke external LLMs or rebuild analytics rollups inside its critical completion transaction.
+
+Derived systems should consume canonical/protocol evidence asynchronously and be rebuildable.
+
+Failures here must not force recollection from X.
+
+---
+
+# 14. Parent/NOS integration boundary
+
+Parent clients should see stable versioned capability/job/data contracts, not:
+
+- Redis stream names;
+- internal task tables;
+- X query IDs;
+- parser versions unless explicitly requested as provenance;
+- session cookies/secrets;
+- research database concepts.
+
+Use an anti-corruption boundary that keeps X protocol internals inside X-rev/XINGESTION integration.
+
+Final transport/auth (mTLS, workload identity/JWT, gateway auth, etc.) depends on parent/NOS trust-model decisions.
+
+---
+
+# 15. Failure-isolation matrix
+
+| Failure | Intended blast radius / response |
+|---|---|
+| One X operation/recipe changes | Dependent approved route/capabilities degrade; control plane remains healthy; X-rev investigation begins. |
+| Shared X auth/transaction mechanism changes | All actual dependent recipes may degrade together; diagnose shared dependency rather than pretending per-operation isolation. |
+| X response schema/parser changes | Raw evidence persists; affected recipe/parser release degrades; production data can be reprocessed after repair. |
+| Pagination changes | Affected recipe/page progression degrades; task/queue and unrelated capabilities continue. |
+| One session invalidated | Session quarantined/cooldown; other valid compatible sessions continue. |
+| Twikit breaks | Approved first-party X-rev routes continue after cutover. |
+| X-rev research browser breaks | Discovery/research pauses; approved production releases continue. |
+| X-rev production runtime release bad | Controlled rollback to prior approved compatible release. |
+| Redis temporarily unavailable | Delivery pauses; durable task/outbox truth remains in PostgreSQL. |
+| Redis dataset lost | Redrive/reconciliation reconstructs eligible deliveries from durable state; no logical task should depend solely on Redis. |
+| PostgreSQL unavailable | New authoritative task transitions stop; workers must not guess ownership. Use HA rather than pretending this dependency is localizable. |
+| Raw object store unavailable | If raw-before-success is required, acquisition backpressures/fails rather than discarding evidence. |
+| Production normalizer broken | Raw/protocol evidence remains; normalization backlog/reprocessing handles repair. |
+| Analytics/brief system broken | Acquisition/normalization continue. |
+| Health detector false positive | Require hysteresis/evidence/operator controls before destructive quarantine; approved stable release remains recoverable. |
+| Bad candidate from research | Candidate remains outside normal production until approved release gate. |
+| 10,000 tasks arrive | Durable admission/backpressure; do not translate directly to 10,000 simultaneous X requests. |
+| Monitor catch-up storm | Coalescing/jitter/priority/catch-up ceilings protect sessions/network/database. |
+
+---
+
+# 16. Scalability expectations
+
+The likely first real bottleneck is X-side acquisition capacity, not the task queue:
 
 ```text
-acquisition -> raw envelope -> normalized event/object
-                                 |
-               +-----------------+------------------+
-               |                 |                  |
-               v                 v                  v
-            analytics          alerts             briefs
+usable sessions
+per-operation/account limits
+network/proxy reputation
+challenge rates
+session affinity
 ```
 
-A broken brief generator must not stop tweet collection.
+### Workers
 
-A bad trend formula must be rebuildable from normalized/raw data.
+Scale independently by work class when measurements justify it:
 
-The ingestion worker should not know how executive briefs are generated.
+- control/acquisition workers;
+- production normalization workers;
+- browser/research workers live in X-rev, not production path;
+- analytics workers.
 
----
+### PostgreSQL
 
-# 11. Capability catalog
+Keep it while it works. Watch:
 
-The initial catalog should use major X-data providers only as a completeness checklist.
+- task/outbox write volume;
+- execution-attempt/history growth;
+- monitor scheduling load;
+- observation/canonical writes;
+- lock/index behavior.
 
-## Tweets
+Partition/archive large historical tables only when measured growth justifies it.
 
-- advanced/latest/top search;
-- tweets by ID(s);
-- replies;
-- replies with alternate sorting where observable;
-- quotations;
-- retweeters;
-- thread context;
-- article/detail expansion;
-- conversation traversal;
-- incremental/query monitoring.
+### Redis Streams
 
-## Users
+Keep it while measured performance is sufficient. Add stream trimming, lag/pending-age metrics and redrive.
 
-- by ID;
-- by handle;
-- batch lookup;
-- search;
-- timeline;
-- tweets + replies where separately observable;
-- mentions;
-- followers with profiles;
-- follower IDs/bulk identity edges;
-- following;
-- follow relationship;
-- profile/about metadata;
-- verified followers where meaningful/observable.
+Do not move to Kafka/Pulsar merely because the target scale sounds large; migrate when durable replay/consumer topology/throughput requirements actually exceed the current design.
 
-## Lists
+### Raw storage
 
-- metadata where available;
-- timeline;
-- members;
-- followers.
+Use object storage for large response bodies. Monitor bytes/day, object count, compression, PUT/read cost and reprocessing throughput.
 
-## Communities
+### Pagination/backfills
 
-- metadata;
-- timeline/search;
-- membership where observable and required.
+Persist/checkpoint by page where appropriate. Do not accumulate huge backfills entirely in worker memory.
 
-## Monitoring
-
-- monitor user tweets;
-- monitor query/filter;
-- incremental checkpointing;
-- deduplicated event delivery;
-- reconnect/backfill/gap detection.
-
-## Mutating/account actions
-
-Posting, following, liking, login automation, and other state-changing actions are **not part of the ingestion core**. If ever required, place them behind a separately authorized Action Plane with different audit/security requirements. Do not contaminate read/ingestion architecture with mutation semantics.
-
----
-
-# 12. Failure isolation matrix
-
-| Failure | Expected blast radius | System response |
-|---|---|---|
-| One X operation version changes | One capability/plan | mark degraded, choose validated alternate, investigate |
-| First-party parser breaks | Parser/version | preserve raw data, quarantine parser, reprocess later |
-| Twikit breaks | Research/transitional adapter | primary first-party acquisition unaffected after cutover |
-| Browser observation breaks | Discovery/recovery only | stable operations continue; discovery alert raised |
-| One session becomes invalid | That session | cooldown/quarantine; route to other session |
-| All sessions for one auth class unavailable | Capabilities needing that auth class | queue/backoff with explicit degraded state |
-| Redis unavailable | Delivery pauses | tasks/outbox remain durable in PostgreSQL |
-| Worker dies | One in-flight lease | DB lease expires, Redis pending entry reclaimed |
-| PostgreSQL unavailable | Control plane | stop new authoritative work rather than split-brain |
-| Normalizer bug | A schema/normalizer version | raw data remains; reprocess after fix |
-| Analytics bug | Analytics only | acquisition continues; rebuild analytics later |
-| Brief provider fails | Brief subsystem only | acquisition/normalization continue |
-| Parent API contract changes | Integration adapter/version | internal capability contract remains stable |
-| Candidate self-heal is wrong | Candidate/canary traffic only | quarantine/rollback; stable version remains active |
-
-If an implementation violates these blast-radius expectations, it should be treated as an architectural defect.
-
----
-
-# 13. Process boundaries: avoid microservice theatre
-
-Not every module needs a separate network service.
-
-Start with a **modular Python codebase plus a small number of process boundaries** where scaling/failure isolation actually differs.
-
-Recommended processes:
-
-1. **API / parent-ingress service** — creates capability requests.
-2. **Outbox dispatcher** — durable DB -> delivery bus.
-3. **Protocol workers** — execute first-party protocol capabilities.
-4. **Browser observation workers** — expensive browser/network-capture workloads, independently scalable.
-5. **Protocol probe/intelligence service** — health probes, drift processing, candidate generation.
-6. **Normalizer/data workers** — if normalization becomes heavy enough to decouple from acquisition.
-7. **Analytics/alert/brief consumers** — downstream, independently restartable.
-
-Inside those processes, use package/module boundaries rather than unnecessary RPC hops.
-
----
-
-# 14. Replaceable infrastructure boundaries
-
-The current implementation uses PostgreSQL + Redis Streams. Keep that until measured limits justify a change.
-
-But code should depend conceptually on:
+Use separate traffic classes such as:
 
 ```text
-TaskLedger
-OutboxStore
-DeliveryBus
-RawPayloadStore
-CanonicalStore
-SecretStore
-OperationRegistry
-HealthStore
+INTERACTIVE
+MONITOR
+BACKFILL
+RESEARCH/CANARY
 ```
 
-Current implementations can be:
+so historical backfills cannot starve freshness-sensitive monitoring.
+
+### Multi-region
+
+Delay until required. Sessions/network identity may need home-region/egress affinity; do not assume stateless region hopping is safe.
+
+---
+
+# 17. Security and evidence rules
+
+- long-lived credentials behind an approved secret boundary;
+- no secrets in tasks/logs/raw metadata/fixtures/investigation packages;
+- raw evidence retention/deletion governed by explicit policy;
+- protocol release artifacts signed/checksummed/pinned as deployment policy matures;
+- reference-library/code incorporation records source/version/license;
+- state-changing account actions are out of scope for ingestion core.
+
+---
+
+# 18. Documentation and cross-repository integrity
+
+The documentation system is itself an architecture-control mechanism.
+
+Primary XINGESTIONV2 documents:
 
 ```text
-TaskLedger       -> PostgreSQL
-DeliveryBus      -> Redis Streams
-RawPayloadStore  -> PostgreSQL initially / object storage later
-CanonicalStore   -> PostgreSQL
-SecretStore      -> local development implementation initially, approved backend later
+AGENTS.md
+architecture.md
+protocol-integration.md
+plan.md
+implemented.md
 ```
 
-This lets the parent system eventually replace Redis with Kafka/SQS/NATS/etc. without rewriting protocol logic.
-
-Do not replace infrastructure pre-emptively merely to look enterprise-grade.
-
----
-
-# 15. Scaling model
-
-Horizontal scale should happen along independent dimensions:
+Primary X-rev-os documents:
 
 ```text
-API ingress
-    |
-Task ledger
-    |
-+-------------------------+
-| protocol worker pool    | scale by request throughput
-+-------------------------+
-| browser worker pool     | scale by expensive browser demand
-+-------------------------+
-| normalizer pool         | scale by payload/CPU volume
-+-------------------------+
-| analytics consumers     | scale independently
-+-------------------------+
+AGENTS.md
+architecture.md
+plan.md
+implemented.md
 ```
 
-Capability families can later be partitioned if one dominates load.
+Rules:
 
-Session scheduling must be aware of per-session/per-operation budgets so adding workers does not simply overrun the same small identity pool.
+1. update architecture docs when durable contracts change;
+2. update plan/status when implementation order or acceptance gates change;
+3. append factual implemented/research evidence when work occurs;
+4. update both repositories when the shared integration contract changes;
+5. once integrated, record the exact pinned X-rev release/runtime/bundle/commit in XINGESTIONV2 `implemented.md`;
+6. do not leave important decisions only in conversations;
+7. if documentation is restructured, migrate history/cross-links coherently.
 
-Autoscaling should be driven by measured signals such as:
-
-- queue age/depth;
-- processing latency;
-- session availability;
-- operation health;
-- CPU/memory;
-- DB/Redis saturation;
-- retry rate;
-- browser demand.
+Codex/researchers may propose ADRs, generated indexes, machine-readable decision logs or another stronger model. The criterion is not preserving filenames forever; it is preserving authoritative ownership, decision history, evidence, update discipline and cross-repository traceability.
 
 ---
 
-# 16. Monitoring and protocol health
+# 19. Architectural bottom line
 
-Production health is more than `/healthz`.
+XINGESTIONV2 should be the durable production ingestion machine.
 
-Minimum dimensions:
+X-rev-os should be the fast-moving protocol microscope and canonical X-specific runtime source.
 
-### Control plane
-
-- tasks created/enqueued/running/completed;
-- queue age;
-- retry/dead-letter rate;
-- lease expiry/reclaim rate;
-- outbox lag.
-
-### Sessions
-
-- usable sessions by auth class;
-- leases/concurrency;
-- cooldown/quarantine;
-- auth failures;
-- operation-specific throttling/budgets.
-
-### Capabilities
-
-- success rate by capability;
-- latency;
-- completeness/fidelity indicators;
-- pagination anomalies;
-- fallback usage.
-
-### Protocol versions
-
-- stable/canary version;
-- schema fingerprint drift;
-- parser failures;
-- request/response contract changes;
-- last known good;
-- first known bad;
-- candidate validation state.
-
-### Data
-
-- raw payload write failures;
-- normalization failures;
-- duplicate/re-observation rate;
-- provenance completeness;
-- processing lag.
-
----
-
-# 17. What we learned from other scraper architectures
-
-The architecture deliberately borrows *patterns*, not code or private designs.
-
-### Crawlee / Apify pattern
-
-Useful separation:
-
-- request queue with unique keys and explicit reclaim;
-- session pool independent from request queue;
-- router/handler separate from queue/session state;
-- autoscaled concurrency independent from crawl logic;
-- result stores separate from request scheduling.
-
-We use the same principle at a larger protocol-capability level: control-plane, session manager, capability router, protocol operation, and data storage must remain separate.
-
-### Zyte pattern
-
-Useful separation:
-
-- direct HTTP acquisition and browser acquisition are separate modes;
-- sessions/cookies are shared supporting concerns;
-- browser network capture is a first-class diagnostic/acquisition tool;
-- extraction behavior can be versioned/pinned;
-- retries/error semantics are explicit;
-- reverse-engineered/direct requests are cheaper to run than browser execution once they are understood.
-
-For this project, browser observation should therefore help discover/validate first-party protocol operations, while direct protocol execution remains the high-throughput primary path whenever possible.
-
-### X library lesson
-
-Open-source X libraries demonstrate both capability and fragility: protocol/query/schema/login changes repeatedly break assumptions. Therefore a single dependency/library cannot be our protocol authority. We need fixtures, operation versions, health probes, drift classification, raw evidence, and alternate plans.
-
----
-
-# 18. Migration from the current repository
-
-Do not throw away Segments 1-3.
-
-They become the **Control Plane foundation**.
-
-Current pieces map as follows:
+The seam between them is deliberately small and versioned:
 
 ```text
-worker_tasks / task_outbox / Redis Streams
-    -> Durable Control Plane
-
-TaskRepository / RedisStreamQueue / lease guard
-    -> task execution infrastructure
-
-TokenRepository / service_token_leases
-    -> early Session Manager, to be redesigned/refined
-
-TwikitSearchAdapter
-    -> LegacyLibraryAdapter during migration
-
-PlaywrightSearchAdapter
-    -> early BrowserObservation/Recovery adapter
-
-analytics_parser
-    -> early Normalizer/Data Plane, to be decoupled
-
-analytics_alerts / analytics_briefs
-    -> downstream consumers, not ingestion core
-
-api_server
-    -> future northbound/query API, requires redesign
+canonical CapabilitySpec
+        |
+ProtocolCapabilityBinding
+        |
+pinned ProtocolReleaseManifest
+        |
+typed X-rev runtime API
+        |
+XINGESTION production Session/Network/RawEvidenceSink
 ```
 
-Migration order must preserve working control-plane invariants while replacing the protocol acquisition layer underneath them.
-
----
-
-# 19. Architectural acceptance tests
-
-A design is not production-grade merely because it has many classes/services.
-
-Before calling the architecture mature, prove these properties:
-
-1. Changing an X search operation implementation does not change task-ledger code.
-2. Changing Redis to another DeliveryBus implementation does not change protocol operation code.
-3. Breaking one capability does not prevent unrelated capabilities from running.
-4. Breaking browser discovery does not stop stable first-party protocol operations.
-5. Breaking a parser does not destroy raw payloads; the same raw payload can be reparsed.
-6. One failed session is isolated; session concurrency/budget limits remain enforced under multiple workers.
-7. A candidate operation cannot become stable without validation/canary/promotion evidence.
-8. A bad promoted operation can be rolled back without redeploying the entire application.
-9. Old operation/parser versions and fixtures remain sufficient to explain historical data provenance.
-10. Analytics/brief failures do not stop acquisition.
-11. Parent-system integration uses versioned capability/data contracts rather than internal queue tables.
-12. Worker/dispatcher crashes do not acknowledge lost work.
-13. Scale claims are backed by load/soak/fault measurements, not architecture diagrams.
-
----
-
-# 20. Explicit non-goals / guardrails
-
-- Do not make TwitterAPI.io or any other provider's route names the canonical architecture.
-- Do not depend on Twikit/twscrape as the long-term primary protocol implementation.
-- Do not make browser automation the default high-throughput path if a validated direct protocol operation exists.
-- Do not let self-healing mean unreviewed arbitrary code rewriting in production.
-- Do not mix account-mutating actions into the ingestion core.
-- Do not couple analytics/LLM briefs to acquisition success.
-- Do not turn every module into a microservice without an operational reason.
-- Do not replace PostgreSQL/Redis only because larger companies use different infrastructure; measure the bottleneck first.
-- Do not sacrifice raw provenance for a cleaner canonical schema.
-
----
-
-# 21. External decisions that remain intentionally open
-
-These do not block architecture implementation today:
-
-- production SecretStore/KMS/Vault choice;
-- parent ingestion system's final ingress/egress transport and auth contract;
-- final storage/retention requirements for raw payloads;
-- production hardware/topology and scale/SLO targets;
-- authorized live research identities/network environment for gated protocol validation;
-- final multi-region strategy.
-
-They are tracked in `implemented.md` and should be requested from the user only when a segment actually requires them.
-
----
-
-# 22. Bottom line
-
-The system should be treated as five stable planes:
-
-```text
-1. CAPABILITY PLANE
-   what data is requested
-
-2. CONTROL PLANE
-   how durable work is scheduled/retried/recovered
-
-3. PROTOCOL PLANE
-   how X is actually queried
-
-4. INTELLIGENCE PLANE
-   how protocol drift is detected, investigated, validated and repaired
-
-5. DATA PLANE
-   how raw evidence becomes canonical, replayable data
-```
-
-A sixth boundary, **Integration/Analytics**, consumes those planes but must not be able to destabilize them.
-
-The strongest architecture is not one where nothing ever breaks. X will change. The target is a system where **the thing that changed is the thing that breaks**, the blast radius is bounded, raw evidence survives, an alternate can be routed safely, and the investigation/repair path is explicit and increasingly automated.
+If this seam stays stable, X can change query IDs, client bundles, parsers, pagination or shared request mechanisms without forcing rewrites of the task ledger, monitoring scheduler, canonical data model or parent API.
