@@ -1,241 +1,323 @@
-# AGENTS.md
+# AGENTS.md — XINGESTIONV2 Standing Contract
 
 ## Purpose
 
-This file is the standing operating contract for work on this repository.
+XINGESTIONV2 is the **core production X/Twitter ingestion repository**. It owns the complete ingestion system around X acquisition: stable capabilities, durable control plane, production session/network allocation, raw evidence storage, canonical data, monitoring, analytics, APIs and eventual parent/NOS integration.
 
-XINGESTIONV2 is an independently developed research subsystem for a government-related research context. It is being developed separately now and is expected to be integrated later into a substantially larger ingestion system. Engineering decisions must favor clear interfaces, reproducibility, auditability, recoverability, security, and measurable production behavior rather than demo-only shortcuts.
+A separate repository, `techtiesai-png/X-rev-os`, owns specialist X protocol research/reverse engineering and the canonical X-specific executable protocol runtime. The two repositories must remain versioned, documented and cross-referenced rather than drifting into duplicate protocol implementations.
 
-The subsystem must remain adaptable, malleable, horizontally scalable, and failure-isolated. Its architectural ambition can use the public service characteristics of serious X/web-data providers as a benchmark, but never claim knowledge of a provider's private backend design.
+Engineering decisions must favor clear interfaces, reproducibility, auditability, recoverability, security, failure isolation and measurable production behavior rather than demo-only shortcuts.
 
-## Primary architectural mission
+The subsystem must remain adaptable, horizontally scalable and embeddable in a larger ingestion platform. Public serious X/web-data providers may be used as capability/service-shape benchmarks; never claim knowledge of their private backend architecture.
 
-The long-term primary X acquisition implementation must be **first-party owned by this project**.
+---
 
-Third-party X libraries such as Twikit/twscrape may be used as:
+## Required companion documents
+
+Before changing architecture or runtime behavior, read these together:
+
+1. `AGENTS.md` — durable rules, ownership and engineering discipline.
+2. `architecture.md` — target whole-system architecture and failure-isolation boundaries.
+3. `protocol-integration.md` — authoritative XINGESTIONV2 ↔ X-rev-os runtime/ownership contract.
+4. `plan.md` — current implementation roadmap and acceptance gates.
+5. `implemented.md` — factual implementation/verification/update ledger.
+
+When protocol-specific implementation/research is involved, also read the corresponding standing docs in `techtiesai-png/X-rev-os`:
+
+```text
+AGENTS.md
+architecture.md
+plan.md
+implemented.md
+```
+
+Do not let durable decisions exist only in ChatGPT/Codex history. Material answers that change architecture, contracts, implementation order, integration, validation or unresolved dependencies must be written into repository documentation.
+
+---
+
+## Core repository relationship
+
+### XINGESTIONV2 is the integration anchor
+
+This repository owns the whole production ingestion system and keeps cross-system architecture bonded together.
+
+It owns:
+
+- canonical product/public `CapabilitySpec` and capability-contract version;
+- durable tasks, PostgreSQL task ledger and transactional outbox;
+- delivery bus/Redis integration;
+- worker execution leases/fencing/crash recovery;
+- **all production retry/backoff policy**;
+- production account/session pools and session leasing;
+- production proxy/network allocation;
+- production raw-evidence storage and retention;
+- canonical entities, relationship edges and time-varying observations;
+- production normalization/reprocessing;
+- monitor/subscription scheduling, coalescing, gap recovery and backfills;
+- analytics/alerts/briefs as downstream consumers;
+- northbound APIs and parent/NOS integration;
+- production capacity/deployment/multi-region decisions;
+- the exact X-rev protocol release pinned in production.
+
+### X-rev-os is the canonical X-specific protocol authority
+
+`techtiesai-png/X-rev-os` owns:
+
+- authorized browser/network protocol observation;
+- protocol research evidence;
+- `ProtocolCapabilityBinding` from XINGESTION capability IDs to protocol recipes;
+- X acquisition recipes and operation definitions;
+- X request construction;
+- X-specific parser implementations;
+- X pagination interpretation;
+- X auth/session attachment semantics;
+- X client-transaction/shared request-metadata algorithms;
+- X feature/config/client-profile bundles;
+- protocol-specific typed errors;
+- fixtures/corpus and recipe-level validation;
+- protocol runtime + bundle/release exports;
+- deep protocol drift/candidate research and future bounded protocol-healing logic.
+
+There must be **one canonical implementation of X-specific protocol behavior: X-rev-os**.
+
+Do not independently rebuild the same parser/request/pagination/transaction implementation inside XINGESTIONV2 after the integration boundary is established.
+
+Production must never require the X-rev research browser, local capture folders, research database or Workbench UI to be online.
+
+---
+
+## Primary architecture mission
+
+The system is capability-driven.
+
+Stable contracts describe **what data is required**; X operation IDs, request shapes, feature flags, parser versions and browser mechanics stay below that boundary.
+
+The long-term primary acquisition path must be first-party owned by the project ecosystem through the X-rev runtime, not fundamentally depend on Twikit/twscrape.
+
+Third-party X libraries may be used as:
 
 - research/reference implementations;
 - migration comparison paths;
 - fixture/behavior references;
-- temporary compatibility/fallback adapters while first-party capabilities are being built.
+- temporary compatibility/fallback paths when equivalence is actually validated.
 
-They must not remain the single protocol authority or an unavoidable long-term runtime dependency for the required capability set.
+They must not be the single protocol authority or unavoidable long-term dependency for required capabilities.
 
-The system is capability-driven. Stable contracts describe **what data is required**; X operation IDs, request shapes, parsers, third-party library calls and browser mechanics stay below that boundary.
+Protocol self-healing is staged and evidence-based. Do not equate it with arbitrary agent/LLM code rewriting directly into production.
 
-Protocol self-healing must be staged and evidence-based: observe -> classify -> route to already validated alternatives -> discover candidates -> validate -> canary -> promote/rollback. Do not equate self-healing with arbitrary agent/LLM code rewriting directly into production.
-
-## Required companion documents
-
-Before changing the repository, read these together:
-
-- [`architecture.md`](./architecture.md) — authoritative target architecture, module boundaries, failure-isolation rules, and self-healing model.
-- [`plan.md`](./plan.md) — authoritative implementation roadmap, segment boundaries, dependencies and acceptance gates.
-- [`implemented.md`](./implemented.md) — factual implementation/verification ledger and external/user-dependent items.
-
-The documents have distinct jobs:
-
-1. `AGENTS.md` defines durable project rules and intent.
-2. `architecture.md` defines what the finished system should look like and what may depend on what.
-3. `plan.md` defines the migration/implementation sequence.
-4. `implemented.md` records what actually exists and what was actually verified.
-
-Whenever the user supplies a durable new project rule, constraint, integration assumption, or engineering preference, update this file if it should govern future work.
-
-Whenever implementation changes the state of a planned item, update `plan.md` and `implemented.md` in the same coherent change set whenever practical.
-
-## Core engineering directive
-
-Do not dumb down, cripple, stub out, or deliberately make the system non-functional merely to make the code easier to maintain or because the collection problem is operationally difficult.
-
-Preserving an existing approach is not the goal. If a better architecture, protocol representation, queue, storage model, deployment method, API contract, testing strategy, or implementation exists, prefer the stronger design and migrate deliberately.
-
-The target is the strongest reasonably production-ready implementation for the stated research purpose, subject to actual technical, security, legal, and platform constraints. Document material constraints explicitly; do not silently replace real functionality with mock-only behavior or a no-op and describe that as a fix.
-
-## Research and collection context
-
-- Treat this repository as research infrastructure, not as a consumer automation toy.
-- The system is intended to study public social-platform data collection, observable protocol behavior, protocol drift, and the architecture required to operate a large resilient ingestion service.
-- Do not remove useful research functionality solely because a platform Terms-of-Service concern exists. Separate engineering facts from compliance questions and document the latter where they affect deployment.
-- Do not assume an existing open-source implementation is the correct architecture merely because it currently works.
-- Reference libraries are research inputs, not automatically code to copy. Record source/version/license and distinguish observed protocol facts, independently implemented behavior, and code whose license permits incorporation.
-- Research context does not remove the need to protect credentials, respect applicable law and authorization boundaries, or avoid unsafe secret handling.
+---
 
 ## Architecture invariants
 
-### Capability Plane
+### Capability layer
 
-- Stable capability contracts define data needs such as search, replies, timelines, followers and monitoring.
-- Capability contracts must not contain Twikit types, browser selectors, X query IDs/operation IDs, or provider-specific route names.
-- Provider APIs are completeness references, not the canonical internal specification.
+- canonical capability contracts live in XINGESTIONV2;
+- contracts contain no Twikit types, browser selectors, X query IDs/operation IDs or provider-specific URLs;
+- contracts define typed inputs/outputs, fidelity, freshness, pagination semantics and provenance requirements;
+- provider APIs are completeness references, not canonical specifications.
 
-### Control Plane
+### Control plane
 
-- PostgreSQL remains the durable control-plane source of truth unless measured evidence justifies migration.
-- Delivery infrastructure is replaceable; Redis Streams is the current implementation, not a business-logic dependency.
-- Queue/task code must not import X protocol code.
-- Task identity, lease, retry, dead-letter and replay invariants remain independent of acquisition implementation.
+- PostgreSQL remains the durable task-control source of truth unless measured evidence justifies migration;
+- Redis Streams/delivery infrastructure is replaceable and not a business-logic authority;
+- queue/task code must not import X-specific protocol implementation;
+- task identity, lease/fencing, retry, dead-letter and replay invariants remain independent of acquisition implementation;
+- XINGESTIONV2 owns production retries; X-rev exported runtime performs zero automatic retries.
 
-### Protocol Plane
+### Protocol/runtime boundary
 
-- X protocol knowledge is represented through versioned operation definitions, first-party transport/request code, parsers and fixtures.
-- Operation versions are explicit and should become immutable after stable promotion.
-- Multiple validated plans/operation versions may implement one capability.
-- Browser execution is a separate acquisition/observation mode, not the default high-throughput path when a validated direct protocol operation exists.
+- X-specific executable behavior comes from a pinned X-rev runtime/protocol release;
+- XINGESTIONV2 maps canonical capabilities to validated X-rev `ProtocolCapabilityBinding`/recipe revisions;
+- XINGESTIONV2 selects/leases sessions and network routes;
+- X-rev owns how supplied session context is attached to protocol requests;
+- XINGESTIONV2 injects the production `RawEvidenceSink`;
+- runtime/bundle/capability-contract versions are pinned through an exact release manifest/checksum, never floating `latest` research state.
 
-### Intelligence Plane
+### Data plane
 
-- Research/discovery tooling must not be required for normal stable collection.
-- Stable/candidate/canary/degraded/quarantined/retired states are explicit.
-- A candidate cannot silently replace stable production behavior.
-- Promotion/rollback must be testable and auditable.
-- If repair is not safely automatable, generate an investigation package rather than guessing.
+- preserve raw acquisition evidence/provenance sufficiently to reparse/re-normalize without recollection where retention allows;
+- raw production evidence belongs to XINGESTIONV2 storage, not X-rev research paths;
+- separate raw acquisitions, canonical entities, relationship edges, observations and derived analytics;
+- platform object IDs are identity; content hashes are integrity/similarity tools, not destructive identity merging;
+- engagement counters/profile statistics are observations over time, not additive events;
+- source-created, captured, first-seen, last-seen and updated times must remain distinct;
+- every normalized object/observation should trace back to task/run, X-rev recipe/runtime revisions and raw evidence refs.
 
-### Data Plane
+### Protocol intelligence
 
-- Preserve raw acquisition evidence/provenance sufficiently to reparse/re-normalize without recollection when retention permits.
-- Separate raw acquisitions, canonical entities, relationship edges, engagement/profile observations and derived analytics.
-- Platform object IDs are identity. Content hashes are similarity/integrity tools, not destructive identity merging.
-- Engagement counters are observations over time, not additive events.
-- Time semantics must be explicit: source-created, captured, first-seen, last-seen and updated times must not be conflated.
-- Every normalized object/observation should be traceable back to task/run, acquisition plan, operation/parser version and raw payload reference/hash.
+- production health telemetry is observed in XINGESTIONV2;
+- deep reverse engineering/candidate validation happens in X-rev-os;
+- research/discovery tooling is not required for stable production collection;
+- an unvalidated candidate cannot silently replace an approved production route;
+- production may later fail over to a previously approved compatible alternate;
+- unresolved drift should produce an investigation package/hand-off rather than make the queue reverse-engineer X inline.
 
-### Downstream / integration boundary
+### Downstream/integration boundary
 
-- Analytics, alerts and briefs are downstream consumers; their failure must not stop acquisition.
-- Parent-system integration uses versioned contracts rather than internal queue/table knowledge.
-- Mutating account actions are not part of the ingestion core; if ever needed, isolate them in a separately authorized Action Plane.
+- analytics, alerts and briefs are downstream consumers; their failure must not stop acquisition;
+- parent-system integration uses versioned contracts, not internal queue/table knowledge;
+- mutating account actions are outside the ingestion core and require a separately authorized plane if ever introduced.
+
+---
 
 ## Failure-isolation rule
 
-The target is not a system where nothing ever breaks. X will change.
+The target is not that nothing breaks. X will change.
 
-The requirement is that **the thing that changed is the thing that breaks**.
+The requirement is: **a failure should have the smallest blast radius permitted by its actual dependency graph.**
 
 Examples:
 
-- one X operation changes -> one capability/version degrades, not the queue;
-- one parser breaks -> raw payload remains reprocessable;
-- Twikit breaks -> first-party stable operations continue after cutover;
-- browser observation breaks -> discovery pauses, stable operations continue;
-- one session fails -> other valid sessions/capabilities continue;
+- one X operation/recipe degrades -> only dependent capabilities/routes degrade, not the control plane;
+- parser breaks -> raw payload remains reprocessable;
+- Twikit breaks -> approved first-party X-rev routes continue;
+- browser research tooling breaks -> protocol discovery pauses, stable production routes continue;
+- one session fails -> other valid sessions continue where the capability permits;
 - analytics breaks -> acquisition continues;
-- Redis fails -> durable tasks/outbox remain in PostgreSQL;
-- candidate repair is wrong -> candidate/canary is quarantined, stable stays available.
+- Redis fails -> durable task/outbox truth remains in PostgreSQL and can be redriven;
+- bad candidate -> current approved production release remains available;
+- shared auth/transaction mechanism changes -> all actual dependents may degrade together and should be diagnosed as one shared dependency, not falsely isolated per endpoint.
 
-Treat violations of these blast-radius expectations as architectural defects.
+Treat avoidable blast-radius expansion as an architectural defect.
 
-## Production-quality rules
+---
 
-### Correctness first
+## Correctness and reliability
 
-- Never mark work complete because it merely compiles or looks plausible.
-- Trace state transitions end to end: capability request -> task -> delivery -> lease -> acquisition plan -> session -> protocol -> raw persistence -> normalization -> downstream consumers.
-- Prefer explicit invariants enforced by schemas/transactions/contracts over comments describing intended behavior.
-- Idempotency, deduplication, retry behavior, pagination/checkpointing and crash recovery must be designed and tested.
-- Do not silently swallow malformed records or infrastructure failures without measurable accounting.
+- never mark work complete because it compiles or looks plausible;
+- trace state transitions end-to-end: capability request -> task -> delivery -> lease -> session/network allocation -> X-rev runtime/recipe -> raw persistence -> production normalization -> downstream consumers;
+- prefer explicit invariants enforced by schemas/transactions/contracts over comments;
+- idempotency, deduplication, retry behavior, pagination/checkpointing and crash recovery must be designed/tested;
+- queue consumption must survive worker crashes without losing acknowledged work;
+- leases need unique ownership/fencing semantics and reclaim behavior;
+- retries require classification, bounded backoff/jitter, durable scheduling and generation fencing;
+- dead letters retain history; replay is selective/auditable and protected against poison loops;
+- graceful shutdown stops new leases and safely completes/returns in-flight work;
+- do not silently swallow malformed records or infrastructure failures.
 
-### No capability regression
+---
 
-Before replacing an implementation, identify what capability it currently provides, including edge cases and failure behavior. The replacement must preserve required behavior or explicitly document a deliberate change in `plan.md` and `implemented.md`.
+## Sessions and secrets
 
-Mock mode is for testing. It must not become the only path that works.
+- never commit passwords, cookies, session tokens, API keys, TOTP seeds, proxy credentials or equivalent secrets;
+- account identity, long-lived credential reference, session artifact, session health and session lease are distinct concepts;
+- do not reuse one database field for incompatible cookies/credentials representations;
+- long-lived secrets belong behind a `SecretStore`/encrypted-secret boundary with least privilege;
+- X-rev `SessionContext` receives only ephemeral material required for protocol execution;
+- never emit secret values in logs, fixtures, research captures or investigation packages.
 
-### Sessions and secrets
+---
 
-- Never commit real passwords, cookies, session tokens, API keys, TOTP seeds, proxy credentials or equivalent secrets.
-- Account identity, session state, session leases and long-lived credentials are different concepts.
-- Do not use one database field for incompatible representations such as both cookies and account credentials.
-- Long-lived credentials must sit behind a `SecretStore`/encrypted-secret boundary with least-privilege access.
-- Never emit secret values in logs, fixtures, research captures or investigation packages.
+## Testing and verification
 
-### Reliability
+- unit-test deterministic logic and integration-test PostgreSQL/Redis/session/runtime transitions;
+- X protocol operations/parsers need X-rev fixture/contract tests independent of live X availability;
+- live protocol validation is explicitly gated and requires authorized research identities/environment;
+- add failure-injection tests for worker termination, Redis/DB interruption, duplicate delivery, session exhaustion, rate limits/auth failure, raw-storage failure, malformed payloads and protocol/runtime errors;
+- never write `verified`, `validated`, `fixed` or `production-ready` in `implemented.md` unless the stated verification actually ran;
+- if verification was impossible, record that and list the missing evidence.
 
-- Queue consumption must survive worker crashes without losing acknowledged tasks.
-- Leases require owner/expiry/fencing semantics or an equivalent reclaim mechanism.
-- Retries require classification, bounded exponential backoff with jitter, durable scheduling and generation fencing.
-- Dead letters retain history; replay is selective, auditable and protected against poison loops.
-- Graceful shutdown stops new leases and safely completes/returns in-flight work.
+---
 
-### Testing and verification
-
-- Unit-test deterministic logic and integration-test PostgreSQL/Redis/session/protocol state transitions.
-- Protocol operations/parsers need fixture/contract tests independent of live X availability.
-- Live protocol tests are explicitly gated and require authorized research identities/environment.
-- Add failure-injection tests for worker termination, Redis/DB interruption, malformed payloads, session exhaustion, rate limit/auth failures, duplicate delivery, protocol drift, parser drift, candidate failure and replay.
-- Never write `verified`, `fixed` or `production-ready` in `implemented.md` unless the stated verification actually ran.
-- If execution was impossible, record that and list missing verification.
-
-### Observability
+## Observability
 
 At minimum track:
 
 - queue depth/age/outbox lag;
 - tasks leased/completed/retried/dead-lettered/replayed;
 - session availability/concurrency/cooldowns;
-- acquisition success/failure by capability/operation/version;
-- parser/schema drift;
+- capability success/failure by pinned X-rev release/recipe;
+- protocol typed error distribution and scope hints;
+- parser/pagination warnings and schema fingerprints;
 - latency and throttling;
 - raw/normalized processing lag;
 - dedup/re-observation rate;
-- candidate/canary/promotion/rollback state;
+- approved release rollout/rollback/quarantine state;
 - API/downstream health.
 
-Logs must be structured and include safe correlation identifiers. Never log credential material.
+Logs must be structured, safely correlated and secret-free.
 
-### Dependencies and deployment
+---
 
-- Runtime dependencies must be declared and pinned/locked sufficiently for reproducible builds.
-- Development and production configuration must be explicit.
-- Empty service definitions, placeholder deployment files and invalid health checks are incomplete work.
-- Database migrations must be versioned/repeatable.
-- CI should run relevant compilation/static checks/tests/migration validation/dependency-security checks.
-- Do not replace PostgreSQL/Redis or split everything into microservices merely to look enterprise-grade. Measure bottlenecks and operational boundaries first.
+## Dependencies and deployment
+
+- runtime dependencies must be declared and sufficiently pinned/locked;
+- X-rev production runtime/bundle pair must be pinned through a release manifest/checksum;
+- development and production configuration must be explicit;
+- empty service definitions, placeholder deployment files and invalid health checks are incomplete work;
+- database migrations must be versioned and migration history auditable;
+- CI should run relevant compilation/static checks/tests/migration validation/dependency-security checks;
+- do not replace PostgreSQL/Redis or split everything into microservices for appearance; measure real bottlenecks first.
+
+---
 
 ## Segmented implementation cadence
 
-Do not attempt the entire roadmap or a broad collection of unrelated fixes in one uninterrupted implementation run.
+Work in small coherent implementation segments with one primary engineering objective and bounded files/state transitions/tests/docs.
 
-Work is divided into **small coherent segments**. A segment normally has one primary engineering objective and a bounded set of directly related files, state transitions, tests and documentation. The user prefers short focused implementation passes rather than long continuous runs. Treat this as a scope constraint, not permission to reduce reasoning depth.
+For each XINGESTIONV2 segment:
 
-For each segment:
+1. read `AGENTS.md`, `architecture.md`, `protocol-integration.md`, the relevant `plan.md` segment and current `implemented.md`;
+2. read X-rev docs if the segment touches protocol/runtime integration;
+3. re-read current code/interfaces rather than implementing from stale assumptions;
+4. research unstable external/library/protocol behavior when material;
+5. cross-check data semantics, blast radius, scaling, security and parent integration;
+6. implement one coherent production-quality slice;
+7. perform the strongest available verification;
+8. update `plan.md` and `implemented.md` in the same coherent change set when practical;
+9. update architecture/integration docs if a durable contract changed;
+10. stop/report before unrelated next-segment work unless explicitly requested.
 
-1. Read `AGENTS.md`, `architecture.md`, and the exact `plan.md` segment.
-2. Re-read current code/interfaces; do not implement from stale assumptions.
-3. Research current external/library/protocol behavior when unstable or material.
-4. Cross-check architecture, data semantics, failure blast radius, scaling, security and parent integration.
-5. Implement one coherent production-quality slice; do not cut through an invariant merely to keep it artificially small.
-6. Perform the strongest available verification.
-7. Update `plan.md` status and `implemented.md` evidence.
-8. Stop and report before beginning the next segment unless the user explicitly requests otherwise.
+A segment report should state what was implemented, important decisions, what actually ran, uncertainty/blockers, cross-repo impact and next recommended step.
 
-The report should state concisely:
+---
 
-- what was implemented;
-- important design decisions;
-- what was actually tested;
-- what remains uncertain/blocking;
-- the next recommended segment.
+## Documentation discipline
 
-Segmenting work must not mean weaker reasoning, skipped research, reduced error handling, temporary architecture that will obviously be discarded, or superficial patches.
+Documentation is part of completion.
+
+### Primary roles
+
+- `AGENTS.md` — durable project rules/ownership/cadence.
+- `architecture.md` — whole-system target architecture.
+- `protocol-integration.md` — authoritative X-rev cross-repository boundary.
+- `plan.md` — current roadmap/status/acceptance gates.
+- `implemented.md` — factual update/verification ledger.
+
+### Required behavior
+
+- whenever a durable rule/constraint changes, update `AGENTS.md`;
+- whenever target architecture changes, update `architecture.md` or the specific authoritative integration document;
+- whenever implementation order/status/dependencies change, update `plan.md`;
+- whenever meaningful work/research/verification is completed, append `implemented.md` with exact evidence and limitations;
+- when the X-rev integration contract changes, update both repositories' relevant docs/cross-links in the same workstream when access permits;
+- once runtime integration exists, `implemented.md` must record the exact X-rev runtime/bundle/release/commit pinned by XINGESTIONV2;
+- never leave the only record of an important architecture answer in chat history.
+
+Codex may suggest ADRs, a generated docs index, machine-readable decision logs or another stronger documentation model. Do not silently replace this structure or create a parallel stale system. Explain the benefit, provide a migration path, preserve historical evidence/cross-links, and update the standing docs coherently if adopted.
+
+---
 
 ## External/user-dependent items
 
-Keep non-blocking dependencies recorded in `implemented.md`. Ask the user only when a segment cannot safely proceed without one of them.
+Keep non-blocking dependencies recorded in `implemented.md`; ask only when one blocks safe progress.
 
 Current categories include:
 
 - authorized live X research environment;
-- production secret backend;
-- parent ingestion integration contract/auth;
+- approved production secret backend;
+- parent/NOS integration contract/auth;
 - retention policy;
-- target production hardware/topology/SLOs;
+- production hardware/topology/SLOs;
 - final multi-region strategy.
+
+---
 
 ## Change discipline
 
-- Prefer coherent changes that can be reviewed/reverted independently.
-- Avoid unrelated refactors inside correctness fixes unless required to preserve a boundary.
-- Do not delete audit/history as a replay/cleanup side effect without an explicit retention policy.
-- Do not claim components exist when the repository contains placeholders/missing files.
-- If documentation conflicts with executable behavior, executable behavior is current reality and documentation drift is a defect to record.
+- prefer coherent reviewable/revertible changes;
+- avoid unrelated refactors inside correctness fixes unless required by a boundary;
+- do not delete task/replay/audit/raw history without explicit retention policy;
+- do not claim components exist when repository state contains placeholders/missing implementations;
+- if docs conflict with executable behavior, executable behavior is current runtime reality and documentation drift is a defect to record/fix;
+- if XINGESTIONV2 and X-rev docs conflict about protocol ownership/runtime integration, `protocol-integration.md` plus the current X-rev standing docs must be reconciled before implementation rather than choosing one silently.
