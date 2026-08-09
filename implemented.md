@@ -345,10 +345,9 @@ X-rev-os proceeds with Stage 0.
 
 ---
 
-## 2026-08-09 — Segment 4 capability contract and planner implemented
+## 2026-08-10 — Segment 4 capability contract and planner implemented
 
-**Type:** production contract/planner implementation with local focused
-verification; remote PostgreSQL/Redis CI pending.
+**Type:** production contract/planner implementation and verification.
 
 ### Implemented
 
@@ -398,12 +397,12 @@ payloads round-trip, unsupported semantics fail closed, malformed/unknown
 inputs are rejected, and a second synthetic capability can be planned without
 changes to TaskRepository or Redis delivery code.
 
-### Verification not yet claimed
+### Supported CI verification
 
-- PostgreSQL/Redis integration tests under the supported Python 3.11 CI image
-  are pending the implementation push;
-- no X-rev runtime release is integrated;
-- no live X behavior is exercised.
+Fork GitHub Actions run `31329222515` passed on Python 3.11 with PostgreSQL 15
+and Redis 7 services. It completed project installation, source compilation,
+correctness-critical Ruff checks, schema/migration application, and the full
+configured control-plane test suite including the new capability/worker tests.
 
 Initial fork CI run `31329147238` passed installation, compilation, lint and
 database migration, then exposed a test-collection configuration defect:
@@ -412,6 +411,13 @@ scripts on `sys.path`, so `test_worker_capability.py` could not import
 `worker.py`. The project pytest configuration now declares the repository root
 explicitly; no production import path or package boundary was changed to hide
 the failure.
+
+### Limitations retained
+
+- no X-rev runtime release is integrated;
+- no live X behavior is exercised;
+- the bounded legacy source-adapter route exists only as a compatibility route
+  until a validated X-rev release can satisfy the contract.
 
 ### Cross-repository impact
 
@@ -422,7 +428,6 @@ research-only guessed contract.
 
 ### Next step
 
-Require the full control-plane CI job to pass, then mark Segment 4 complete.
-The next XINGESTIONV2 segment is Segment 5 — session, identity, network, budget
-and secret boundary. X-rev-os can independently proceed to Stage 1 once the
-authorized browser login is available.
+Segment 4 is complete. The next XINGESTIONV2 segment is Segment 5 — session,
+identity, network, budget and secret boundary. X-rev-os can independently
+proceed to Stage 1 once the authorized browser login is available.

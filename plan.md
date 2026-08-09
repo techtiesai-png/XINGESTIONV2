@@ -134,7 +134,7 @@ The older roadmap items that proposed building a separate operation registry/bro
 
 # Phase A — Correct stable production contracts
 
-## [~] Segment 4 — Capability contracts and planner boundary
+## [x] Segment 4 — Capability contracts and planner boundary
 
 ### Goal
 
@@ -158,9 +158,8 @@ Make the production system request stable capabilities rather than `X_KEYWORD_SE
 - capability contract version can be referenced by an X-rev `ProtocolCapabilityBinding`;
 - control-plane tests continue passing.
 
-Implementation and focused local verification completed on 2026-08-09. Final
-`[x]` status awaits the Python 3.11 PostgreSQL/Redis GitHub Actions run recorded
-in `implemented.md`.
+Implemented and verified on 2026-08-10. The supported Python 3.11
+PostgreSQL/Redis GitHub Actions evidence is recorded in `implemented.md`.
 
 ---
 
