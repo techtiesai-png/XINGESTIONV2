@@ -456,3 +456,8 @@ The standing XINGESTIONV2 contract now records that its future session adapter:
 No X request builder, parser, pagination, runtime dependency or production
 secret backend was added to XINGESTIONV2. No X-rev runtime release is integrated
 or approved for production by this documentation-only alignment.
+
+Canonical `main` commit `60e7491` passed fork GitHub Actions
+`control-plane-ci` run **`31332956165`**, including installation, compilation,
+correctness lint, PostgreSQL schema/migrations and the configured control-plane
+tests with PostgreSQL 15 and Redis 7 services.
