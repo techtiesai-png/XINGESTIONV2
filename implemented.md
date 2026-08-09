@@ -405,6 +405,14 @@ changes to TaskRepository or Redis delivery code.
 - no X-rev runtime release is integrated;
 - no live X behavior is exercised.
 
+Initial fork CI run `31329147238` passed installation, compilation, lint and
+database migration, then exposed a test-collection configuration defect:
+the console-script form of `pytest` did not place repository-root runtime
+scripts on `sys.path`, so `test_worker_capability.py` could not import
+`worker.py`. The project pytest configuration now declares the repository root
+explicitly; no production import path or package boundary was changed to hide
+the failure.
+
 ### Cross-repository impact
 
 The previously planned canonical capability-contract artifact now exists.
