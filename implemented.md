@@ -431,3 +431,28 @@ research-only guessed contract.
 Segment 4 is complete. The next XINGESTIONV2 segment is Segment 5 — session,
 identity, network, budget and secret boundary. X-rev-os can independently
 proceed to Stage 1 once the authorized browser login is available.
+
+## 2026-08-10 — X-rev Stage 2 SessionContext contract synchronized
+
+**Type:** Cross-repository integration-contract documentation update.
+
+`techtiesai-png/X-rev-os` commit `cd61033` introduced the offline Stage 2 typed
+runtime and made one session input explicit: optional ephemeral authorization
+header material alongside cookies. The normal Chrome HAR used for Stage 1
+omitted both sensitive fields, so X-rev correctly stopped before making a live
+direct request.
+
+The standing XINGESTIONV2 contract now records that its future session adapter:
+
+- resolves cookies and optional authorization material from the leased
+  `SessionArtifact`/`SecretRef` immediately before execution;
+- never places those values in task payloads, logs, safe provenance, immutable
+  X-rev revisions or protocol bundles;
+- supplies only the ephemeral `SessionContext`; X-rev still owns X-specific
+  attachment semantics;
+- follows the exact pinned X-rev auth-profile/release contract if later
+  revisions source stable client authorization material internally.
+
+No X request builder, parser, pagination, runtime dependency or production
+secret backend was added to XINGESTIONV2. No X-rev runtime release is integrated
+or approved for production by this documentation-only alignment.

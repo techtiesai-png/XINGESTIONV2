@@ -123,6 +123,25 @@ XINGESTIONV2 owns which session/network route gets selected and leased.
 
 Credentials/password/TOTP material are not ordinary protocol-request inputs.
 
+The current Stage 2 X-rev interface models `SessionContext` as ephemeral:
+
+```text
+safe session_id
+auth_class
+cookies
+optional authorization header material
+locale / user-agent / client profile where required
+safe metadata
+```
+
+Cookies and optional authorization values are secret material: XINGESTIONV2
+resolves them from the leased session's `SecretRef` immediately before runtime
+execution and never places them in durable tasks, logs, safe provenance or an
+immutable protocol bundle. X-rev attaches them and keeps secret-bearing fields
+out of repr/log surfaces. A future validated `AuthProfileRevision` may source
+stable client authorization material inside X-rev; production follows the
+exact pinned release contract rather than assuming either sourcing model.
+
 ---
 
 ## 5. Retry ownership

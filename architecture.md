@@ -316,6 +316,11 @@ Responsibilities:
 - operation/capability budget observations;
 - supplying ephemeral `SessionContext` to X-rev without exposing long-lived credentials.
 
+The adapter may resolve cookies and optional authorization header material from
+the leased session's secret reference when required by the pinned X-rev auth
+profile. Those values are ephemeral secret fields, not task payload, safe
+metadata, revision content or protocol-bundle data.
+
 X-rev owns X-specific attachment semantics (which cookies/header values are derived/attached). XINGESTION owns which production session/network route is used.
 
 Losing one session should not disable a capability when equivalent approved sessions remain.

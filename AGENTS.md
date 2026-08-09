@@ -218,6 +218,10 @@ Treat avoidable blast-radius expansion as an architectural defect.
 - do not reuse one database field for incompatible cookies/credentials representations;
 - long-lived secrets belong behind a `SecretStore`/encrypted-secret boundary with least privilege;
 - X-rev `SessionContext` receives only ephemeral material required for protocol execution;
+- when the pinned X-rev `AuthProfileRevision` requires it, that ephemeral
+  material may include an authorization header value resolved from a production
+  `SecretRef`; it is never task payload, safe metadata or a persisted protocol
+  revision value;
 - never emit secret values in logs, fixtures, research captures or investigation packages.
 
 ---

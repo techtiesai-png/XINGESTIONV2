@@ -181,6 +181,9 @@ Replace ambiguous `service_tokens` semantics with production session/account/net
 - operation/capability budget observations;
 - `NetworkContext`/proxy allocation abstraction;
 - adapter to the X-rev `SessionContext`/runtime interface without exposing passwords/TOTP.
+- ephemeral resolution of cookies and optional authorization header material
+  from `SessionArtifact`/`SecretRef`, with no secret values in durable tasks,
+  logs or safe provenance.
 
 ### Acceptance
 
