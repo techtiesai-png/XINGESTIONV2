@@ -287,3 +287,58 @@ For meaningful work, Codex/researchers must update the relevant docs and ledger 
 A stronger ADR/generated-index/machine-readable documentation approach may be proposed later, but must include an explicit migration preserving history, evidence, ownership and cross-repository links rather than creating a parallel stale documentation tree.
 
 No runtime work was performed in this entry.
+
+---
+
+## 2026-08-09 — Canonical fork and main-branch alignment
+
+**Type:** repository-management and documentation synchronization; no runtime
+behavior changed.
+
+### Result
+
+- established `techtiesai-png/XINGESTIONV2` as the only configured and
+  authoritative XINGESTIONV2 repository;
+- documented that the historical `Pruthavirajsingh/XINGESTIONV2` upstream is
+  not a project source of truth and is inspected only when explicitly
+  requested;
+- integrated the complete `hardening/control-plane-v1` control-plane and
+  architecture history into the fork's `main` branch;
+- made the clean worktree's local `main` track `origin/main`;
+- preserved the old dirty checkout unchanged on `legacy-dirty-main`.
+
+### Git safety and verification
+
+- authenticated GitHub account: `techtiesai-png`;
+- new commit identity:
+  `techtiesai-png <298773167+techtiesai-png@users.noreply.github.com>`;
+- confirmed before integration that `origin/main` had no commits absent from
+  `origin/hardening/control-plane-v1` (`0 56` left/right divergence);
+- committed the repository-identity documentation as `de96a21`;
+- pushed by ordinary fast-forward, without force:
+  `origin/main` `00725eb -> de96a21`;
+- verified `origin/hardening/control-plane-v1` is an ancestor of the updated
+  `origin/main` (`0 1` divergence after the documentation commit);
+- verified the original dirty files remained present and unmodified:
+  `seed_test.py`, `task_replay.py`, `worker.py`, `CLAUDE.md`, and
+  `requirements.txt`;
+- no push was made to the historical upstream repository.
+
+### Documentation changed
+
+- `AGENTS.md`;
+- `architecture.md`;
+- `protocol-integration.md`;
+- `plan.md`;
+- `implemented.md`.
+
+### Cross-repository impact
+
+The corresponding canonical repository identity is recorded in the standing
+documents of `techtiesai-png/X-rev-os`.
+
+### Next recommended step
+
+Continue production work from fork `main`. The next planned production slice
+is Segment 4 — canonical capability contracts and planner boundary, while
+X-rev-os proceeds with Stage 0.

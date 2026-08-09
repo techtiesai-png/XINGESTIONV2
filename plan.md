@@ -42,7 +42,7 @@ Build an independently owned, production-grade X/Twitter ingestion subsystem wit
 
 Third-party X libraries remain reference/comparison inputs, not production protocol authorities.
 
-## [D] Canonical repository and branch
+## [x] Canonical repository and branch
 
 All active XINGESTIONV2 work targets:
 
