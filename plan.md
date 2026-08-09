@@ -134,7 +134,7 @@ The older roadmap items that proposed building a separate operation registry/bro
 
 # Phase A — Correct stable production contracts
 
-## [ ] Segment 4 — Capability contracts and planner boundary
+## [~] Segment 4 — Capability contracts and planner boundary
 
 ### Goal
 
@@ -157,6 +157,10 @@ Make the production system request stable capabilities rather than `X_KEYWORD_SE
 - capability contract contains no operation/query IDs, Twikit types or browser selectors;
 - capability contract version can be referenced by an X-rev `ProtocolCapabilityBinding`;
 - control-plane tests continue passing.
+
+Implementation and focused local verification completed on 2026-08-09. Final
+`[x]` status awaits the Python 3.11 PostgreSQL/Redis GitHub Actions run recorded
+in `implemented.md`.
 
 ---
 

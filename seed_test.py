@@ -6,9 +6,9 @@ from typing import Any
 
 import asyncpg
 
+from xingestion.capabilities import CAPABILITY_TASK_TYPE, CapabilityRequest
 from xingestion.config import Settings
 from xingestion.control_plane import TaskRepository
-
 
 TOKEN_ROWS = [
     ("test_account_01", json.dumps({})),
@@ -62,11 +62,18 @@ async def main() -> None:
         task_ids = []
         for payload in TASK_PAYLOADS:
             keyword = str(payload["search_keyword"])
+            capability_request = CapabilityRequest(
+                capability_id="SEARCH_TWEETS",
+                capability_contract_version="1",
+                params={"query": keyword, "product": "Latest", "max_pages": 1},
+                page_size=20,
+                correlation_id=f"seed:{keyword}",
+            )
             task_ids.append(
                 await task_repo.create_task(
-                    task_type="X_KEYWORD_SEARCH",
-                    payload=payload,
-                    idempotency_key=f"seed:X_KEYWORD_SEARCH:{keyword}",
+                    task_type=CAPABILITY_TASK_TYPE,
+                    payload=capability_request.to_task_payload(),
+                    idempotency_key=f"seed:SEARCH_TWEETS:v1:{keyword}",
                     max_attempts=5,
                 )
             )

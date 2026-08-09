@@ -154,6 +154,20 @@ These are logical boundaries. Do not split them into microservices unless there 
 
 The canonical `CapabilitySpec` belongs to XINGESTIONV2 because it is the stable product/parent-system contract.
 
+The first machine-readable contract artifact is implemented at:
+
+```text
+xingestion/contracts/capabilities.v1.json
+artifact_schema_version: 1
+```
+
+It is shipped as package data and loaded through the typed
+`xingestion.capabilities.CapabilityCatalog`. `CapabilityRequest` remains
+protocol-neutral, while `CapabilityPlanner` selects an approved compatible
+route. Durable tasks use `CAPABILITY_REQUEST`; the former `X_KEYWORD_SEARCH`
+payload is accepted through an explicit compatibility translator rather than
+remaining the canonical contract.
+
 A capability describes **what data behavior is required**, never the underlying X endpoint.
 
 Example:
@@ -185,6 +199,11 @@ Hard rule: capability contracts contain no:
 - provider-specific public URL names.
 
 X-rev-os publishes `ProtocolCapabilityBinding`s linking a compatible capability-contract version to validated acquisition recipe revisions.
+
+Until the future X-rev production runtime route exists, the planner contains a
+bounded legacy source-adapter route for `SEARCH_TWEETS/Latest`. That route
+declares its supported input subset and rejects `Top`, `Media`, or filters it
+cannot honor rather than silently returning weaker semantics.
 
 ---
 

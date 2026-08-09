@@ -3,7 +3,10 @@ name: control-plane-ci
 on:
   push:
     branches:
+      - main
       - hardening/**
+      - feature/**
+      - segment*/**
   pull_request:
 
 jobs:
@@ -81,3 +84,5 @@ jobs:
           tests/test_outbox_integration.py
           tests/test_worker_recovery_integration.py
           tests/test_retry_replay_integration.py
+          tests/test_capabilities.py
+          tests/test_worker_capability.py

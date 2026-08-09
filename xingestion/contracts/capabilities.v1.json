@@ -1,0 +1,35 @@
+{
+  "artifact_schema_version": "1",
+  "capabilities": [
+    {
+      "capability_id": "SEARCH_TWEETS",
+      "contract_version": "1",
+      "description": "Retrieve tweets matching a search expression with requested product semantics.",
+      "inputs": {
+        "from_user": {"nullable": true, "required": false, "type": "string"},
+        "include_replies": {"default": true, "required": false, "type": "boolean"},
+        "include_reposts": {"default": true, "required": false, "type": "boolean"},
+        "language": {"nullable": true, "required": false, "type": "string"},
+        "max_pages": {"default": 2, "maximum": 10, "minimum": 1, "required": false, "type": "integer"},
+        "product": {"default": "Latest", "enum": ["Latest", "Top", "Media"], "required": false, "type": "string"},
+        "query": {"minimum_length": 1, "required": true, "type": "string"},
+        "since": {"format": "date", "nullable": true, "required": false, "type": "string"},
+        "to_user": {"nullable": true, "required": false, "type": "string"},
+        "until": {"format": "date", "nullable": true, "required": false, "type": "string"}
+      },
+      "output": {
+        "record_schema_version": "tweet-record/v1",
+        "record_type": "tweet",
+        "required_identity_fields": ["tweet_id"]
+      },
+      "pagination": {
+        "cursor_semantics": "OPAQUE",
+        "default_page_size": 20,
+        "maximum_page_size": 200,
+        "previous_cursor_optional": true
+      },
+      "required_fidelity": ["REAL_PLATFORM_IDENTITY", "REQUESTED_PRODUCT_SEMANTICS", "CURSOR_PROGRESSION"],
+      "required_provenance": ["task_id", "run_id", "raw_evidence_ref", "acquisition_route", "collector_or_protocol_release"]
+    }
+  ]
+}

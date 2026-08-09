@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import time
-from importlib.metadata import PackageNotFoundError, version as package_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
 from typing import Any
 
 from twikit import Client
@@ -78,7 +79,7 @@ class TwikitSearchAdapter:
 
             result = await client.search_tweet(
                 query=request.query,
-                product="Latest",
+                product=request.product,
                 count=max(1, min(request.page_size, 20)),
                 cursor=request.cursor,
             )

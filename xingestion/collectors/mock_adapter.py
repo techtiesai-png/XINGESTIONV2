@@ -39,7 +39,7 @@ class MockSearchAdapter:
             next_cursor=None,
             adapter_name=self.name,
             adapter_version=self.version,
-            metadata={"fixture": True},
+            metadata={"fixture": True, "product": request.product},
         )
 
     async def close(self) -> None:

@@ -82,7 +82,19 @@ ProtocolCapabilityBinding
 
 XINGESTIONV2 must not expose operation/query IDs in its public capability contract.
 
-Until a generated shared contract artifact exists, stable capability IDs may be mirrored in X-rev-os only for research compatibility and must be marked non-authoritative there.
+The first canonical machine-readable artifact now exists at:
+
+```text
+xingestion/contracts/capabilities.v1.json
+artifact_schema_version: 1
+```
+
+It defines `SEARCH_TWEETS` contract version `1` with typed input, output,
+fidelity, opaque-pagination and provenance expectations. X-rev-os may consume
+or mirror this artifact for `ProtocolCapabilityBinding` compatibility, but must
+not import XINGESTIONV2 application internals. A production release must pin
+the relevant capability-contract version/checksum through the
+`ProtocolReleaseManifest`.
 
 ---
 

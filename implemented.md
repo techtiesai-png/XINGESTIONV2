@@ -342,3 +342,79 @@ documents of `techtiesai-png/X-rev-os`.
 Continue production work from fork `main`. The next planned production slice
 is Segment 4 — canonical capability contracts and planner boundary, while
 X-rev-os proceeds with Stage 0.
+
+---
+
+## 2026-08-09 — Segment 4 capability contract and planner implemented
+
+**Type:** production contract/planner implementation with local focused
+verification; remote PostgreSQL/Redis CI pending.
+
+### Implemented
+
+- canonical machine-readable `SEARCH_TWEETS` capability contract version `1`
+  at `xingestion/contracts/capabilities.v1.json`;
+- typed protocol-neutral `CapabilitySpec`, `CapabilityRequest`,
+  `CapabilityCatalog`, `CapabilityRoute`, `CapabilityPlanner`, and
+  `AcquisitionPlan` models;
+- typed input/default/enum/range/date validation, opaque cursor and page-size
+  contract enforcement;
+- route-level supported product/input constraints and bounded page limits;
+- fail-fast route validation, including the requirement that every future
+  X-rev runtime route pin an immutable `ProtocolReleaseManifest`;
+- explicit `XREV_PROTOCOL_RUNTIME`, `LEGACY_SOURCE_ADAPTER`, and `FIXTURE`
+  executor kinds without embedding X operation/query IDs;
+- canonical durable task type `CAPABILITY_REQUEST` and serializer;
+- compatibility translation from legacy `X_KEYWORD_SEARCH` payloads;
+- worker planning before collection, with capability/contract/route provenance
+  included in result metadata;
+- deliberate rejection of unsupported `Top`, `Media`, and filter semantics on
+  the current bounded legacy `Latest` route;
+- `seed_test.py` migration to canonical capability tasks;
+- package version `0.3.0` and packaged contract JSON;
+- `.gitignore` for local Python, environment and test state;
+- CI branch triggers updated for canonical `main` and temporary segment/feature
+  branches, with the new capability/worker tests included.
+
+No X request builder, parser, pagination algorithm or reverse-engineering
+machinery was added to XINGESTIONV2.
+
+### Local verification
+
+The workstation only provides Python 3.12 while the repository officially
+pins Python 3.11. A dependency-compatible Python 3.12 smoke environment was
+used; GitHub Python 3.11 remains authoritative.
+
+- `python -m compileall -q xingestion tests worker.py seed_test.py` — passed;
+- `ruff check --select E,F,B ...` — passed;
+- focused `pytest` run covering capability contracts, worker capability routing
+  and control-plane value objects — **12 passed**;
+- wheel build — passed; inspection confirmed the wheel contains
+  `xingestion/contracts/capabilities.v1.json`;
+- `git diff --check` — passed.
+
+Tests establish that legacy search maps to `SEARCH_TWEETS@1`, canonical task
+payloads round-trip, unsupported semantics fail closed, malformed/unknown
+inputs are rejected, and a second synthetic capability can be planned without
+changes to TaskRepository or Redis delivery code.
+
+### Verification not yet claimed
+
+- PostgreSQL/Redis integration tests under the supported Python 3.11 CI image
+  are pending the implementation push;
+- no X-rev runtime release is integrated;
+- no live X behavior is exercised.
+
+### Cross-repository impact
+
+The previously planned canonical capability-contract artifact now exists.
+X-rev-os documentation is updated in the same workstream so future
+`ProtocolCapabilityBinding` work references this artifact rather than a
+research-only guessed contract.
+
+### Next step
+
+Require the full control-plane CI job to pass, then mark Segment 4 complete.
+The next XINGESTIONV2 segment is Segment 5 — session, identity, network, budget
+and secret boundary. X-rev-os can independently proceed to Stage 1 once the
+authorized browser login is available.

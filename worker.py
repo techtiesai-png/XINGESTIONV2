@@ -13,6 +13,14 @@ import redis.asyncio as aioredis
 from pydantic import ValidationError
 
 from analytics_parser import SocialMediaDocument, upsert_insight_record
+from xingestion.capabilities import (
+    LEGACY_SEARCH_TASK_TYPE,
+    CapabilityContractError,
+    CapabilityPlanner,
+    ExecutorKind,
+    legacy_search_planner,
+    request_from_task,
+)
 from xingestion.collectors import (
     AuthenticationFailure,
     CollectionBatch,
@@ -88,11 +96,16 @@ class IngestionExecutor:
         token_repo: TokenRepository,
         primary_adapter: SourceAdapter,
         recovery_adapter: SourceAdapter | None,
+        capability_planner: CapabilityPlanner | None = None,
     ) -> None:
         self.settings = settings
         self.token_repo = token_repo
         self.primary_adapter = primary_adapter
         self.recovery_adapter = recovery_adapter
+        self.capability_planner = capability_planner or legacy_search_planner(
+            maximum_page_size=min(settings.collector_page_size, 20),
+            maximum_pages=settings.collector_max_pages,
+        )
 
     async def _collect_with_session(
         self,
@@ -140,45 +153,37 @@ class IngestionExecutor:
         task: TaskLease,
         worker_id: str,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        if task.task_type != "X_KEYWORD_SEARCH":
+        task_payload = dict(task.payload)
+        if task.task_type == LEGACY_SEARCH_TASK_TYPE:
+            task_payload.setdefault("max_pages", self.settings.collector_max_pages)
+        try:
+            capability_request = request_from_task(
+                task.task_type,
+                task_payload,
+                correlation_id=f"task:{task.id}:generation:{task.delivery_generation}",
+            )
+            plan = self.capability_planner.plan(capability_request)
+        except CapabilityContractError as exc:
+            raise PermanentTaskFailure(str(exc)) from exc
+        if plan.route.executor_kind is not ExecutorKind.LEGACY_SOURCE_ADAPTER:
             raise PermanentTaskFailure(
-                f"unsupported task_type={task.task_type}"
+                f"route {plan.route.route_id} requires unsupported executor "
+                f"{plan.route.executor_kind.value}"
             )
 
-        query = str(task.payload.get("search_keyword") or "").strip()
-        if not query:
-            raise PermanentTaskFailure(
-                "task payload is missing search_keyword"
-            )
-
-        requested_pages = int(
-            task.payload.get(
-                "max_pages",
-                self.settings.collector_max_pages,
-            )
-        )
-        max_pages = max(
-            1,
-            min(requested_pages, self.settings.collector_max_pages),
-        )
-        requested_page_size = int(
-            task.payload.get(
-                "page_size",
-                self.settings.collector_page_size,
-            )
-        )
-        page_size = max(
-            1,
-            min(requested_page_size, self.settings.collector_page_size, 20),
-        )
+        query = str(plan.request.params["query"])
+        product = str(plan.request.params["product"])
+        max_pages = plan.effective_max_pages
+        page_size = plan.effective_page_size
 
         all_items: list[dict[str, Any]] = []
-        cursor = task.payload.get("cursor")
+        cursor = plan.request.cursor
         adapters_used: list[dict[str, Any]] = []
 
         for page_number in range(max_pages):
             request = CollectionRequest(
                 query=query,
+                product=product,
                 cursor=str(cursor) if cursor else None,
                 page_size=page_size,
             )
@@ -244,11 +249,16 @@ class IngestionExecutor:
                 break
 
         return all_items, {
+            "capability_id": plan.request.capability_id,
+            "capability_contract_version": plan.request.capability_contract_version,
+            "acquisition_route": plan.route.route_id,
             "query": query,
+            "product": product,
             "pages": len(adapters_used),
             "items_collected": len(all_items),
             "adapters": adapters_used,
             "next_cursor": cursor,
+            "planner_warnings": list(plan.warnings),
         }
 
 

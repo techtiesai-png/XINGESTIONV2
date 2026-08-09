@@ -9,6 +9,7 @@ from xingestion.control_plane import TokenLease
 @dataclass(slots=True, frozen=True)
 class CollectionRequest:
     query: str
+    product: str = "Latest"
     cursor: str | None = None
     page_size: int = 20
 

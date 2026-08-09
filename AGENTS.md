@@ -100,6 +100,12 @@ The system is capability-driven.
 
 Stable contracts describe **what data is required**; X operation IDs, request shapes, feature flags, parser versions and browser mechanics stay below that boundary.
 
+The canonical machine-readable capability artifact is
+`xingestion/contracts/capabilities.v1.json`. Version it deliberately, ship it
+with the package, and keep it protocol-neutral. Durable capability tasks use
+`CAPABILITY_REQUEST`; legacy task shapes may only enter through explicit,
+tested compatibility translators.
+
 The long-term primary acquisition path must be first-party owned by the project ecosystem through the X-rev runtime, not fundamentally depend on Twikit/twscrape.
 
 Third-party X libraries may be used as:
