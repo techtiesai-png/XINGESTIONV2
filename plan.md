@@ -42,6 +42,20 @@ Build an independently owned, production-grade X/Twitter ingestion subsystem wit
 
 Third-party X libraries remain reference/comparison inputs, not production protocol authorities.
 
+## [D] Canonical repository and branch
+
+All active XINGESTIONV2 work targets:
+
+```text
+repository: techtiesai-png/XINGESTIONV2
+integration branch: main
+```
+
+The historical `Pruthavirajsingh/XINGESTIONV2` upstream is not a project source
+of truth and is used only for an explicitly requested comparison. The former
+`hardening/control-plane-v1` line is integration history, not a permanent
+authoritative branch after its verified fast-forward into `main`.
+
 ---
 
 # Completed foundation

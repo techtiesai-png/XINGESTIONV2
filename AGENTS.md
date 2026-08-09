@@ -4,6 +4,14 @@
 
 XINGESTIONV2 is the **core production X/Twitter ingestion repository**. It owns the complete ingestion system around X acquisition: stable capabilities, durable control plane, production session/network allocation, raw evidence storage, canonical data, monitoring, analytics, APIs and eventual parent/NOS integration.
 
+In this project, `XINGESTIONV2` means the maintained repository at
+`techtiesai-png/XINGESTIONV2`. Its `main` branch is the canonical integration
+branch. The repository was historically forked from
+`Pruthavirajsingh/XINGESTIONV2`, but that original/upstream repository is not an
+active project repository and must not be searched, modified, pushed to or
+treated as a source of project truth unless the user explicitly requests an
+upstream comparison.
+
 A separate repository, `techtiesai-png/X-rev-os`, owns specialist X protocol research/reverse engineering and the canonical X-specific executable protocol runtime. The two repositories must remain versioned, documented and cross-referenced rather than drifting into duplicate protocol implementations.
 
 Engineering decisions must favor clear interfaces, reproducibility, auditability, recoverability, security, failure isolation and measurable production behavior rather than demo-only shortcuts.

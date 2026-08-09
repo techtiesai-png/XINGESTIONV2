@@ -35,6 +35,18 @@ The system should use serious public X/web-data platforms only as capability/ser
 
 The project ecosystem intentionally has two repositories with one explicit boundary.
 
+Canonical repositories and integration branches:
+
+```text
+techtiesai-png/XINGESTIONV2  -> main
+techtiesai-png/X-rev-os      -> main
+```
+
+`Pruthavirajsingh/XINGESTIONV2` is only the historical upstream from which the
+maintained XINGESTIONV2 repository was forked. It is not part of the active
+project topology and is consulted only when an upstream comparison is
+explicitly requested.
+
 ```text
 ┌──────────────────────────────────────────────────────────────┐
 │                     techtiesai-png/X-rev-os                 │
@@ -57,7 +69,7 @@ The project ecosystem intentionally has two repositories with one explicit bound
 └──────────────────────────────────────────────────────────────┘
 ```
 
-XINGESTIONV2 remains the **core entire ingestion repository and integration anchor**. The fact that protocol research/runtime is separated does not fragment the system contract: `protocol-integration.md`, pinned release manifests and synchronized documentation keep the repositories bonded.
+`techtiesai-png/XINGESTIONV2` remains the **core entire ingestion repository and integration anchor**. The fact that protocol research/runtime is separated does not fragment the system contract: `protocol-integration.md`, pinned release manifests and synchronized documentation keep the repositories bonded.
 
 ---
 

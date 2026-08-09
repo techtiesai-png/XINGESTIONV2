@@ -4,7 +4,9 @@
 
 ## 1. Why the repositories are separate
 
-XINGESTIONV2 is the **core production ingestion repository**. It owns the complete ingestion system and remains the place where all major system-level architecture stays bonded together and cross-referenced.
+`techtiesai-png/XINGESTIONV2` is the **canonical core production ingestion repository**. Its `main` branch is the active integration branch and source of truth for this project. The historical upstream/original `Pruthavirajsingh/XINGESTIONV2` repository is not an active project repository and must not be used for project state, implementation or pushes unless the user explicitly requests an upstream comparison.
+
+XINGESTIONV2 owns the complete ingestion system and remains the place where all major system-level architecture stays bonded together and cross-referenced.
 
 `techtiesai-png/X-rev-os` is a deliberately separated specialist repository for X/Twitter protocol research, reverse engineering, validation and the canonical X-specific executable protocol runtime.
 
@@ -264,6 +266,7 @@ Canonical specialist repository:
 
 ```text
 GitHub: techtiesai-png/X-rev-os
+Branch: main
 ```
 
 Its standing docs are:
