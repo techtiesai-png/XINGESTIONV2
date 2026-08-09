@@ -1,39 +1,66 @@
-# XINGESTIONV2 Implementation Ledger
+# XINGESTIONV2 Implementation / Verification Ledger
 
-> Read [`AGENTS.md`](./AGENTS.md), [`architecture.md`](./architecture.md), and [`plan.md`](./plan.md) before changing runtime behavior.
+> Read `AGENTS.md`, `architecture.md`, `protocol-integration.md`, and `plan.md` before changing runtime behavior.
 
-This file records implementation evidence, verified segments, architecture-only decisions, and cross-segment dependencies. A change is not called verified unless the stated verification actually ran.
+This file records implementation evidence, verified segments, architecture/documentation decisions and cross-repository dependencies. A change is not called verified unless the stated verification actually ran.
 
-## External / user-dependent items
+## Ledger/update rules
 
-**Current status: none of these block the next engineering segment.** Ask the user only when one becomes necessary to proceed.
+For every meaningful implementation, architecture or integration pass, record:
 
-- **LIVE-X-01 — live collector validation:** first-party live protocol certification will eventually require authorized research test identities/session material plus the approved outbound network/proxy environment. Fixture/contract/research tooling can continue without this. **User/environment input required later.**
-- **SECRETS-01 — production secret backend:** final production credential/session storage needs an approved secret backend (cloud secret manager, Vault/KMS-style system, or parent-platform secret service). A provider-neutral `SecretStore` interface/local implementation can be built before this choice. **User/platform decision required later.**
-- **PARENT-01 — parent ingestion integration contract:** final merge into the larger ingestion system needs ingress/egress schema, event/API transport, authentication, correlation IDs and versioning expectations. Internal modularization can continue now. **User/parent-system details required later.**
-- **SCALE-01 — deployment/SLO envelope:** production capacity certification requires target hardware/topology, region/network assumptions, PostgreSQL/Redis deployment model, expected sustained/burst throughput, latency SLOs and availability targets. **User/infrastructure details required before final load certification.**
-- **RETENTION-01 — retention policy:** final raw/canonical/task/dead-letter/audit cleanup and archival needs required retention periods. **Organizational/user decision required before final retention implementation.**
-- **AUTH-01 — parent/API authentication:** final API/gateway hardening needs the larger system's trust model (for example mTLS, workload identity/JWT, gateway auth). Provider-neutral API contracts can be implemented first. **User/platform decision required later.**
+- date and scope;
+- files/components changed;
+- important decisions;
+- what was actually tested/observed;
+- exact CI/run/commit/release references where available;
+- uncertainty/blockers;
+- X-rev-os integration impact where relevant;
+- next recommended step.
 
-These are dependencies, not reasons to stop unrelated implementation.
+Do not silently rewrite old evidence when conclusions change; append a superseding entry.
+
+Once X-rev runtime integration exists, record the exact pinned:
+
+```text
+X-rev git commit/release
+xrev-runtime version
+protocol-bundle version
+capability-contract version
+ProtocolReleaseManifest/checksum
+```
+
+in this ledger.
+
+---
+
+# External / user-dependent items
+
+None of these should block unrelated engineering work.
+
+- **LIVE-X-01 — live protocol validation:** final live X-rev recipe and production integration certification require authorized research/test session material and approved outbound network/proxy environment.
+- **SECRETS-01 — production secret backend:** final credential/session storage needs an approved Vault/KMS/cloud/parent secret backend. Provider-neutral `SecretStore` interfaces can be built before selection.
+- **PARENT-01 — parent/NOS integration contract:** final parent transport/schema/auth/correlation/versioning details remain external.
+- **SCALE-01 — production SLO/capacity envelope:** provider-scale certification needs target sustained/burst throughput, hardware/topology, latency/availability targets and deployment assumptions.
+- **RETENTION-01 — retention policy:** final raw/canonical/task/dead-letter/audit cleanup/archival requires explicit organizational retention policy.
+- **AUTH-01 — parent/API trust model:** final northbound authentication needs the parent trust model.
 
 ---
 
 ## 2026-08-08 — Repository audit and engineering-control documentation
 
-**Scope:** audit baseline and documentation controls.
+**Type:** audit/documentation baseline.
 
-**Files:** `AGENTS.md`, original `plan.md`, `implemented.md`.
+Established production-first/no-capability-regression rules, research context, future larger-system integration target and verification discipline.
 
-Established production-first/no-capability-regression rules, government-related research context, future larger-system integration target, verification discipline, and implementation ledger. Static review covered worker, analytics, API, session refresh/seeding, replay/cleanup, schema, Compose and deployment placeholders. Original runtime baseline: `8e7771a483d5ea57f440f7f410e7b0bea0176f4c`.
+Static review covered worker, analytics, API, session refresh/seeding, replay/cleanup, schema, Compose and deployment placeholders.
+
+Original runtime baseline recorded at the time: `8e7771a483d5ea57f440f7f410e7b0bea0176f4c`.
 
 No runtime remediation was claimed in this entry.
 
 ---
 
 ## 2026-08-08 — Segment 1: durable control plane and outbox
-
-**Related plan area:** durable task delivery / reproducibility / integration-test foundation.
 
 ### Implemented
 
@@ -42,17 +69,19 @@ No runtime remediation was claimed in this entry.
 - transactional outbox;
 - Redis Streams consumer groups instead of destructive list consumption;
 - claim-based outbox dispatcher using PostgreSQL `SKIP LOCKED`;
-- task `ENQUEUED` state committed before Redis publication;
+- task `ENQUEUED` committed before Redis publication;
 - duplicate-delivery safety through generation/idempotency guards;
 - Redis AOF for local stack, health checks, migrations, pinned dependencies and CI.
 
 ### Verified
 
-GitHub Actions run **`31241791142`** passed against PostgreSQL 15 + Redis 7. Verified install, compilation, correctness lint, migrations, task -> outbox -> Redis -> DB lease -> DONE -> ACK, and safe rejection/ACK of duplicate delivery after completion.
+GitHub Actions run **`31241791142`** passed against PostgreSQL 15 + Redis 7.
+
+Verified install, compilation, correctness lint, migrations, task -> outbox -> Redis -> DB lease -> DONE -> ACK, and safe rejection/ACK of duplicate delivery after completion.
 
 ### Remaining after Segment 1
 
-Worker heartbeat/reclaim, retry-generation lifecycle, literal process failure and high-scale/multi-dispatcher fault testing remained for later segments.
+Worker heartbeat/reclaim, retry lifecycle, literal process failure and high-scale/multi-dispatcher fault testing remained for later segments.
 
 ---
 
@@ -63,17 +92,19 @@ Worker heartbeat/reclaim, retry-generation lifecycle, literal process failure an
 - renewable PostgreSQL execution leases;
 - lease renewal fenced by task ID, delivery generation, owner, state and non-expiry;
 - Redis pending-entry idle refresh with `XCLAIM`;
-- validated heartbeat/lease/reclaim timing relationships;
+- heartbeat/lease/reclaim timing validation;
 - guarded collection/persistence cancellation after durable lease loss;
 - graceful cancellation returns work to `ENQUEUED`; hard crash recovers via lease expiry + Redis reclaim.
 
 ### Verified
 
-GitHub Actions run **`31243415471`** passed with PostgreSQL 15 + Redis 7. Verified healthy heartbeat fencing, deterministic hard-crash state recovery, stale-owner commit rejection and cancellation after deliberately losing the DB fence.
+GitHub Actions run **`31243415471`** passed with PostgreSQL 15 + Redis 7.
+
+Verified healthy heartbeat fencing, deterministic hard-crash recovery, stale-owner commit rejection and cancellation after deliberately losing the DB fence.
 
 ### Remaining after Segment 2
 
-Literal OS `SIGKILL`, cross-region/clock-skew behavior, reclaim storms/high-scale chaos, and session lease lifecycle remained separate work.
+Literal OS `SIGKILL`, same-worker-ID ABA/unique lease-token hardening, cross-region/clock-skew behavior, reclaim storms/high-scale chaos and session lease lifecycle remain separate work.
 
 ---
 
@@ -98,103 +129,161 @@ Final strengthened GitHub Actions run **`31245531114`** passed completely agains
 Verified:
 
 1. a retry scheduled 60 seconds ahead cannot publish early;
-2. deterministic advancement of durable due time makes it eligible without sleep;
+2. deterministic advancement of due time makes it eligible without sleep;
 3. delivery generation `0 -> 1` rollover and stale generation rejection;
 4. successful retry completion with attempt count preserved;
 5. retry exhaustion creates exactly one dead-letter archive with correct failure class/generation;
 6. selective replay filtering;
 7. replay lineage/audit;
 8. replay idempotency through normal operator path;
-9. replacement task can execute through the same outbox/Redis/lease path;
-10. all prior control-plane/crash-recovery tests remain passing.
+9. replacement task executes through the same outbox/Redis/lease path;
+10. prior control-plane/crash-recovery tests remained passing.
 
 ### Status after Segment 3
 
-The core single-region task lifecycle is integration-verified: durable creation, idempotency, outbox delivery, generation fencing, worker leasing/heartbeat, crash recovery, scheduled retry, stale-message rejection, dead-lettering, replay and durable completion/ACK.
+The core single-region logical task lifecycle is integration-verified: durable creation, idempotency, outbox delivery, generation fencing, worker leasing/heartbeat, crash recovery, scheduled retry, stale-message rejection, dead-lettering, replay and durable completion/ACK.
 
-Provider-scale production certification is not claimed. Load/chaos/failover/soak work remains later.
+Provider-scale certification is not claimed.
+
+Known later hardening includes unique lease tokens/epochs, Redis dataset-loss redrive, stream retention, migration-history hardening and scale/chaos/soak testing.
 
 ---
 
-## 2026-08-08 — Architecture reset: first-party protocol ownership and protocol intelligence
+## 2026-08-08 — Architecture reset: first-party protocol ownership
 
-**Type:** architecture/design pass only. **No runtime code behavior changed in this entry.**
+**Type:** architecture/design pass only; no runtime behavior changed.
 
-### Why the plan changed
+Changed the mission from merely hardening a Twikit-based scraper to owning the required X data capability stack and keeping third-party libraries as research/reference inputs.
 
-The earlier roadmap still treated Twikit as the primary protocol implementation to harden around. The revised mission is broader: required X data capabilities should ultimately execute through a protocol implementation owned by this project, while Twikit/twscrape/provider docs/browser observations become research/reference inputs rather than a single runtime protocol authority.
+Established conceptual separation of capability, control, protocol, protocol-intelligence, data and downstream concerns, while retaining PostgreSQL + Redis until measurements justify migration.
 
-Public capability documentation from serious X-data providers was reviewed as a completeness benchmark. Public web-scraping architecture documentation was also reviewed to validate the module-separation approach. The important recurring patterns were independent request queues, session pools/state, routing/handlers, concurrency control, HTTP-vs-browser acquisition, network capture, explicit retry/error semantics and versioned extraction behavior. No private provider architecture is assumed.
+This entry preceded creation of the dedicated X-rev-os repository; the later 2026-08-09 entries below supersede the **implementation location** of the protocol/research plane while preserving the underlying first-party ownership/failure-isolation goals.
+
+---
+
+## 2026-08-09 — Dedicated X-rev-os protocol repository created
+
+**Type:** architecture/documentation decision only; no XINGESTIONV2 runtime code changed.
+
+Canonical specialist repository established:
+
+```text
+techtiesai-png/X-rev-os
+```
+
+### Decision
+
+XINGESTIONV2 remains the **core production ingestion repository/integration anchor**.
+
+X-rev-os becomes the canonical specialist repository for:
+
+- X protocol observation/reverse engineering;
+- operation/request definitions;
+- X request construction;
+- X parsers/pagination;
+- X auth/session attachment semantics;
+- client transaction/shared request metadata;
+- feature/config bundles;
+- fixtures and recipe validation;
+- protocol runtime/bundle/release exports;
+- deep drift/candidate research.
+
+XINGESTIONV2 continues owning:
+
+- canonical CapabilitySpec;
+- tasks/queue/workers;
+- all production retries;
+- production session/network pools;
+- production raw evidence;
+- canonical normalization/data;
+- monitoring;
+- analytics/APIs;
+- parent/NOS integration;
+- production rollout/pinning of approved X-rev releases.
+
+No runtime integration was implemented or verified in this pass.
+
+---
+
+## 2026-08-09 — Cross-repository runtime/validation contract resolved
+
+**Type:** architecture/documentation pass only.
+
+Resolved and documented:
+
+- canonical `CapabilitySpec` ownership in XINGESTIONV2;
+- X-rev `ProtocolCapabilityBinding` mapping;
+- typed exported runtime concepts (`ProtocolRequest`, `SessionContext`, injected transport/network context, `RawEvidenceSink`, `AcquisitionResult`, typed errors);
+- zero automatic retries in exported X-rev production runtime;
+- XINGESTION ownership of production raw evidence through injected sink;
+- validation attached to the exact immutable `AcquisitionRecipeRevision` composition;
+- independent runtime/bundle/capability-contract versioning;
+- pinned `ProtocolReleaseManifest` for production;
+- one-session limitation on session-local-vs-global drift classification;
+- deterministic fixture transformation/provenance;
+- separate evidence maturity, validation freshness and operational health.
+
+Detailed X-rev contracts live in the X-rev repository's `architecture.md`.
+
+No live X or production integration tests were run in this documentation pass.
+
+---
+
+## 2026-08-09 — XINGESTIONV2 architecture/roadmap synchronized with X-rev-os
+
+**Type:** documentation/architecture synchronization; no runtime code changed.
 
 ### Files changed
 
-- added `architecture.md`;
-- completely rewrote `plan.md` around the new architecture;
-- updated `AGENTS.md` so first-party protocol ownership and staged self-healing are durable project rules;
+- rewrote `AGENTS.md` around XINGESTIONV2 as the core integration repository and X-rev-os as protocol authority;
+- rewrote `architecture.md` so the Protocol Plane is a pinned X-rev runtime rather than a duplicate internal research/operation-registry implementation;
+- added `protocol-integration.md` as the authoritative cross-repository ownership/runtime contract;
+- rewrote `plan.md` so protocol observation/reverse-engineering/candidate validation is implemented in X-rev-os and consumed here, while XINGESTION builds capability contracts, production session/network/raw-storage integration, production telemetry and rollout;
 - updated this ledger.
 
-### Architecture decided
+### Important corrections
 
-The system is separated into stable planes:
+- old roadmap Segment 6/7/9/10/11 descriptions that would have duplicated the protocol registry/browser research/parser authority directly in XINGESTIONV2 are superseded;
+- production retry authority is explicitly single-owned by XINGESTIONV2;
+- raw evidence is single-owned by the production Data Plane and injected into X-rev runtime through `RawEvidenceSink`;
+- X-rev release/runtime/bundle is pinned rather than consumed as floating research state;
+- production health feeds evidence back to X-rev research, but stable production does not require the research browser/tooling to run.
 
-1. **Capability Plane** — what data is requested;
-2. **Control Plane** — durable tasks, delivery, leases, retry/replay;
-3. **Protocol Plane** — versioned first-party X operations, transport and parsers;
-4. **Intelligence Plane** — probes, drift detection, research captures, candidate registry, canary/promotion/rollback and investigation escalation;
-5. **Data Plane** — immutable raw acquisition evidence, normalization, canonical entities/edges/observations and provenance;
-6. downstream analytics/integration consume those planes but cannot destabilize acquisition.
+### Verification
 
-### Important decisions
+Documentation was cross-read for ownership/roadmap consistency. No runtime tests were required or claimed because runtime code did not change.
 
-- Provider endpoints are a capability checklist, not a one-to-one internal specification.
-- `CapabilityRequest` must not expose Twikit types, browser selectors or X operation IDs.
-- `AcquisitionAdapter` is used only at real external/transport boundaries; the architecture deliberately avoids meaningless adapter proliferation.
-- `XInternalWebAdapter` is the intended primary first-party runtime path.
-- browser acquisition becomes an independent observation/recovery path.
-- Twikit becomes a transitional/reference adapter rather than long-term protocol authority.
-- protocol operations/parsers are versioned and health-scored.
-- self-healing is staged: observe -> known-alternate failover -> candidate discovery -> validation/canary -> promotion/rollback -> bounded auto-repair -> Codex/researcher investigation package when unresolved.
-- arbitrary agent/LLM code rewriting directly into production is not the self-healing model.
-- raw payload/provenance must survive parser failure so data can be reparsed instead of recollected where retention permits.
-- analytics/alerts/briefs move downstream from acquisition.
-- state-changing account actions, if ever required, belong in a separate authorized Action Plane, not the ingestion core.
-- use a modular codebase with only the process/service boundaries that have real scaling/failure-isolation value; avoid microservice theatre.
-- PostgreSQL + Redis Streams stay until measurements justify replacing them.
+### Next recommended XINGESTIONV2 step
 
-### Revised roadmap
+**Segment 4 — canonical CapabilitySpec and planner boundary**, while X-rev-os independently begins Stage 0 research-kernel work.
 
-The new roadmap estimates approximately **16 remaining focused runtime segments, Segments 4–19**:
+---
 
-4. Capability contracts/planner boundary
-5. Session/identity/budget/secret boundary
-6. First-party protocol foundation/raw envelope
-7. First-party `SEARCH_TWEETS` vertical slice
-8. Raw data plane/normalization decoupling
-9. Protocol observation/research lab
-10. Health/drift detection
-11. Candidate/canary/promotion/rollback self-healing foundation
-12. Core tweet capabilities
-13. User/profile/timeline capabilities
-14. Graph/lists/communities
-15. Monitoring/incremental ingestion/gap recovery
-16. Northbound/parent integration API
-17. Analytics/alerts/brief decoupling
-18. Operability/security/deployment/retention
-19. Scale/chaos/provider-class readiness certification
+## 2026-08-09 — Documentation governance synchronized across repositories
 
-The scope is larger than the old plan because the system is no longer merely hardening a third-party library integration; it is building first-party protocol ownership plus protocol intelligence.
+**Type:** documentation/process decision only.
 
-### Verification performed for this pass
+XINGESTIONV2 primary docs now have distinct authoritative jobs:
 
-- Re-read current `AGENTS.md`, current verified implementation ledger and existing roadmap before redesign.
-- Cross-checked the design against the already implemented Control Plane so Segments 1–3 remain useful rather than being rewritten.
-- Reviewed public/primary documentation for Crawlee/Apify request/session/routing/scaling separation, Zyte HTTP/browser/session/network-capture/error behavior, public TwitterAPI.io capability surface, and current open-source X-library failure patterns.
-- Re-read the resulting `architecture.md` and new `plan.md` for boundary/roadmap consistency.
+```text
+AGENTS.md                durable rules/ownership/cadence
+architecture.md          whole-system target architecture
+protocol-integration.md  X-rev integration contract
+plan.md                  roadmap/status/acceptance gates
+implemented.md           factual update/verification ledger
+```
 
-No runtime tests were required because no runtime code changed in this architecture-reset entry.
+X-rev-os now follows the corresponding four-doc model:
 
-### Immediate next runtime segment
+```text
+AGENTS.md
+architecture.md
+plan.md
+implemented.md
+```
 
-**Segment 4 — Capability contracts and planner boundary.**
+For meaningful work, Codex/researchers must update the relevant docs and ledger rather than leaving material answers only in chat history.
 
-This creates the seam that lets the verified Control Plane remain stable while the X acquisition implementation is replaced underneath it.
+A stronger ADR/generated-index/machine-readable documentation approach may be proposed later, but must include an explicit migration preserving history, evidence, ownership and cross-repository links rather than creating a parallel stale documentation tree.
+
+No runtime work was performed in this entry.
